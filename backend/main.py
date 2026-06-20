@@ -34,10 +34,14 @@ origins = ["http://localhost:5173", "http://localhost:4173"]
 if frontend_url_env:
     origins.extend([url.strip() for url in frontend_url_env.split(",")])
 
+# If wildcard is in origins or no FRONTEND_URL is specified, set to allow all origins
+if "*" in origins or not frontend_url_env:
+    origins = ["*"]
+
 app.add_middleware(
     CORSMiddleware,
     allow_origins=origins,
-    allow_credentials=True,
+    allow_credentials=False if "*" in origins else True,
     allow_methods=["*"],
     allow_headers=["*"],
     expose_headers=["Content-Length", "Content-Range", "Accept-Ranges"],
