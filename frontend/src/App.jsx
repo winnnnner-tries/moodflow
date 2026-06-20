@@ -81,7 +81,8 @@ export function App() {
   const [isCalibratingActive, setIsCalibratingActive] = useState(false);
   const isCalibratingRef = useRef(false);
 
-  // Fetch dummy tracks on mount
+  // Fetch dummy tracks on mount (Disabled to prevent YouTube bot blocking and IP bans)
+  /*
   useEffect(() => {
     const fetchDummyTracks = async () => {
       try {
@@ -126,8 +127,10 @@ export function App() {
     };
     fetchDummyTracks();
   }, []);
+  */
 
-  // Load next batch of uncalibrated tracks when local queue runs low
+  // Load next batch of uncalibrated tracks when local queue runs low (Disabled)
+  /*
   useEffect(() => {
     if (isPlaying) return;
     
@@ -163,9 +166,11 @@ export function App() {
       fetchNextBatch();
     }
   }, [calibrationQueue.length, calibrationProgress.total, calibrationProgress.current, isPlaying]);
+  */
 
 
-  // Process calibration queue sequentially when audio is idle
+  // Process calibration queue sequentially when audio is idle (Disabled)
+  /*
   useEffect(() => {
     if (calibrationQueue.length === 0 || isPlaying || isCalibratingRef.current) {
       setIsCalibratingActive(isCalibratingRef.current);
@@ -265,6 +270,7 @@ export function App() {
       clearTimeout(timer);
     };
   }, [calibrationQueue, isPlaying]);
+  */
 
   const currentTrack = currentTrackIndex >= 0 && currentTrackIndex < queue.length ? queue[currentTrackIndex] : null;
 
