@@ -1,0 +1,4 @@
+https://www.kaggle.com/datasets/gauthamvijayaraj/spotify-tracks-dataset-updated-every-week
+
+to search for the song: run this in powershell -
+python "E:\1 ~ SACHIN\NEW PROJECTS\MOODFLOW\search_db.py" "YOUR_SONG_NAME"

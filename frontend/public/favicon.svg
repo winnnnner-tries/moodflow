@@ -1,0 +1,16 @@
+<svg xmlns="http://www.w3.org/2000/svg" viewBox="0 0 128 128" width="128" height="128">
+  <rect width="128" height="128" rx="32" fill="#08080f" />
+  <defs>
+    <linearGradient id="wave-grad" x1="0%" y1="0%" x2="100%" y2="0%">
+      <stop offset="0%" stop-color="#9a82ff" />
+      <stop offset="50%" stop-color="#d07cf0" />
+      <stop offset="100%" stop-color="#f43f5e" />
+    </linearGradient>
+  </defs>
+  <path d="M 28 68 C 38 32, 52 32, 64 64 C 76 96, 90 96, 100 60" 
+        fill="none" 
+        stroke="url(#wave-grad)" 
+        stroke-width="16" 
+        stroke-linecap="round" 
+        stroke-linejoin="round" />
+</svg>

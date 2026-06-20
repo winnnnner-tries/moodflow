@@ -1,0 +1,213 @@
+from fastapi import APIRouter, HTTPException, Query, Body, Request
+from fastapi.responses import StreamingResponse
+import httpx
+from datetime import datetime, timezone
+from services.supabase_client import supabase, execute_with_retry
+from services.innertube import innertube_service
+from services.normalise import normalise_row
+
+router = APIRouter()
+
+@router.get("/search")
+def search_tracks(q: str = Query(..., description="Search query")):
+    try:
+        # 1. Call Innertube to get list of search results
+        results = innertube_service.search_tracks_list(q)
+        return results
+    except Exception as e:
+        print(f"Error in search_tracks: {e}")
+        raise HTTPException(status_code=500, detail=str(e))
+
+@router.get("/stream/{youtube_id}")
+def get_stream_url(youtube_id: str, request: Request):
+    try:
+        # Resolve the signed stream URL using yt-dlp
+        url = None
+        try:
+            import yt_dlp
+            ydl_opts = {
+                'format': 'bestaudio[ext=m4a]/best',
+                'quiet': True,
+                'no_warnings': True,
+            }
+            with yt_dlp.YoutubeDL(ydl_opts) as ydl:
+                info = ydl.extract_info(f"https://www.youtube.com/watch?v={youtube_id}", download=False)
+                url = info.get('url')
+        except Exception as yt_err:
+            print(f"yt-dlp resolution failed for {youtube_id}: {yt_err}. Falling back to innertube.")
+
+        if not url:
+            # Fetch the stream URL from YouTube Music
+            url = innertube_service.get_stream_url(youtube_id)
+
+        base_headers = {
+            "User-Agent": "Mozilla/5.0 (Windows NT 10.0; Win64; x64) AppleWebKit/537.36 (KHTML, like Gecko) Chrome/120.0.0.0 Safari/537.36"
+        }
+
+        # --- HEAD request to learn Content-Length & Content-Type -----------
+        with httpx.Client(timeout=15.0) as client:
+            head_resp = client.head(url, headers=base_headers, follow_redirects=True)
+
+        content_type = head_resp.headers.get("content-type", "audio/webm")
+        total_size = int(head_resp.headers.get("content-length", 0))
+
+        # --- Determine if this is a Range request ------------------------
+        range_header = request.headers.get("range")
+
+        if range_header and total_size:
+            # Parse "bytes=START-END" (END is optional)
+            range_spec = range_header.replace("bytes=", "")
+            parts = range_spec.split("-")
+            start = int(parts[0])
+            end = int(parts[1]) if parts[1] else total_size - 1
+            content_length = end - start + 1
+
+            async def stream_range():
+                print(f"[Stream] Starting range request bytes={start}-{end} for URL: {url[:100]}...")
+                try:
+                    req_headers = {**base_headers, "Range": f"bytes={start}-{end}"}
+                    async with httpx.AsyncClient(timeout=30.0) as client:
+                        async with client.stream("GET", url, headers=req_headers, follow_redirects=True) as response:
+                            print(f"[Stream] YouTube response status: {response.status_code}")
+                            async for chunk in response.aiter_bytes(chunk_size=65536):
+                                yield chunk
+                    print("[Stream] Range stream generator finished successfully.")
+                except Exception as stream_err:
+                    print(f"[Stream] Exception in stream_range generator: {stream_err}")
+                    import traceback
+                    traceback.print_exc()
+
+            return StreamingResponse(
+                stream_range(),
+                status_code=206,
+                media_type=content_type,
+                headers={
+                    "Content-Length": str(content_length),
+                    "Content-Range": f"bytes {start}-{end}/{total_size}",
+                    "Accept-Ranges": "bytes",
+                }
+            )
+
+        # --- Full (non-range) request ------------------------------------
+        async def stream_full():
+            print(f"[Stream] Starting full stream request for URL: {url[:100]}...")
+            try:
+                async with httpx.AsyncClient(timeout=30.0) as client:
+                    async with client.stream("GET", url, headers=base_headers, follow_redirects=True) as response:
+                        print(f"[Stream] YouTube response status: {response.status_code}")
+                        async for chunk in response.aiter_bytes(chunk_size=65536):
+                            yield chunk
+                print("[Stream] Full stream generator finished successfully.")
+            except Exception as stream_err:
+                print(f"[Stream] Exception in stream_full generator: {stream_err}")
+                import traceback
+                traceback.print_exc()
+
+        resp_headers = {
+            "Accept-Ranges": "bytes",
+        }
+        # Omit Content-Length header for full streaming responses to prevent
+        # h11 LocalProtocolError when the stream length differs or is closed early.
+
+        return StreamingResponse(
+            stream_full(),
+            media_type=content_type,
+            headers=resp_headers
+        )
+    except Exception as e:
+        print(f"Error getting stream URL: {e}")
+        raise HTTPException(status_code=500, detail=f"Failed to stream audio: {str(e)}")
+
+@router.post("/tracks")
+def create_track(
+    track_name: str = Body(..., embed=True),
+    artist: str = Body(..., embed=True),
+    album: str = Body(None, embed=True),
+    youtube_id: str = Body(None, embed=True),
+    thumbnail_url: str = Body(None, embed=True),
+    duration_ms: int = Body(None, embed=True),
+    language: str = Body("en", embed=True),
+    explicit: bool = Body(False, embed=True)
+):
+    try:
+        # Check uniqueness constraint
+        exist_check = execute_with_retry(
+            supabase.table("tracks")
+            .select("*")
+            .eq("track_name", track_name)
+            .eq("artist", artist)
+        )
+            
+        if exist_check.data:
+            return exist_check.data[0]
+
+        new_track = {
+            "track_name": track_name,
+            "artist": artist,
+            "album": album,
+            "youtube_id": youtube_id,
+            "thumbnail_url": thumbnail_url,
+            "duration_ms": duration_ms,
+            "language": language,
+            "explicit": explicit,
+            "source": "user_added",
+            "created_at": datetime.now(timezone.utc).isoformat()
+        }
+        
+        insert_resp = execute_with_retry(supabase.table("tracks").insert(new_track))
+        if not insert_resp.data:
+            raise HTTPException(status_code=500, detail="Failed to insert track.")
+        return insert_resp.data[0]
+    except Exception as e:
+        print(f"Error creating track: {e}")
+        raise HTTPException(status_code=500, detail=str(e))
+
+@router.patch("/tracks/{id}")
+def update_track_parameters(id: str, params: dict = Body(...)):
+    try:
+        # Apply normalization rules
+        normalized_params = normalise_row(params, source="user_added")
+        
+        # Filter only track parameter fields we want to update
+        allowed_keys = [
+            "energy", "danceability", "valence", "tempo", 
+            "acousticness", "instrumentalness", "speechiness", 
+            "liveness", "loudness", "popularity"
+        ]
+        
+        update_data = {k: v for k, v in normalized_params.items() if k in allowed_keys}
+        
+        update_resp = execute_with_retry(
+            supabase.table("tracks")
+            .update(update_data)
+            .eq("id", id)
+        )
+            
+        if not update_resp.data:
+            raise HTTPException(status_code=404, detail="Track not found.")
+            
+        return update_resp.data[0]
+    except Exception as e:
+        print(f"Error updating track {id}: {e}")
+        raise HTTPException(status_code=500, detail=str(e))
+
+@router.post("/history")
+def log_play_history(
+    user_id: str = Body(..., embed=True),
+    track_id: str = Body(..., embed=True),
+    completed: bool = Body(False, embed=True)
+):
+    try:
+        new_history = {
+            "user_id": user_id,
+            "track_id": track_id,
+            "completed": completed
+        }
+        insert_resp = execute_with_retry(supabase.table("play_history").insert(new_history))
+        if not insert_resp.data:
+            raise HTTPException(status_code=500, detail="Failed to log play history.")
+        return insert_resp.data[0]
+    except Exception as e:
+        print(f"Error logging play history: {e}")
+        raise HTTPException(status_code=500, detail=str(e))
+
