@@ -23,6 +23,7 @@ def get_stream_url(youtube_id: str, request: Request):
     try:
         # Resolve the signed stream URL using yt-dlp
         url = None
+        yt_err = None
         try:
             import yt_dlp
             ydl_opts = {
@@ -33,12 +34,16 @@ def get_stream_url(youtube_id: str, request: Request):
             with yt_dlp.YoutubeDL(ydl_opts) as ydl:
                 info = ydl.extract_info(f"https://www.youtube.com/watch?v={youtube_id}", download=False)
                 url = info.get('url')
-        except Exception as yt_err:
-            print(f"yt-dlp resolution failed for {youtube_id}: {yt_err}. Falling back to innertube.")
+        except Exception as err:
+            yt_err = err
+            print(f"yt-dlp resolution failed for {youtube_id}: {err}. Falling back to innertube.")
 
         if not url:
             # Fetch the stream URL from YouTube Music
-            url = innertube_service.get_stream_url(youtube_id)
+            try:
+                url = innertube_service.get_stream_url(youtube_id)
+            except Exception as innertube_err:
+                raise Exception(f"yt-dlp resolution failed: {yt_err} | innertube resolution failed: {innertube_err}")
 
         base_headers = {
             "User-Agent": "Mozilla/5.0 (Windows NT 10.0; Win64; x64) AppleWebKit/537.36 (KHTML, like Gecko) Chrome/120.0.0.0 Safari/537.36"
