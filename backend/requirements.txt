@@ -4,3 +4,5 @@ supabase
 python-dotenv
 ytmusicapi
 pandas
+yt-dlp
+httpx
