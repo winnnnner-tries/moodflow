@@ -45,16 +45,31 @@ def resolve_stream_invidious(youtube_id: str) -> str:
             
     # Fallback to hardcoded list if fetching failed
     fallback_list = [
+        "https://inv.thepixora.com",
+        "https://invidious.tiekoetter.com",
         "https://inv.nadeko.net",
         "https://invidious.nerdvpn.de",
+        "https://invidious.f5.si",
+        "https://yt.chocolatemoo53.com",
         "https://invidious.no-logs.com",
         "https://invidious.projectsegfau.lt"
     ]
     
+    primary_instances = [
+        "https://inv.thepixora.com"
+    ]
+    
     search_list = cached_invidious_instances if cached_invidious_instances else fallback_list
     
-    # Try up to 6 instances to resolve the stream
-    for idx, instance in enumerate(search_list[:6]):
+    # Prioritize working instances and remove duplicates/Tor/I2P domains
+    clean_list = []
+    for inst in primary_instances + search_list + fallback_list:
+        if inst and inst not in clean_list:
+            if not any(x in inst for x in [".onion", ".i2p", ".ygg"]):
+                clean_list.append(inst)
+    
+    # Try up to 12 instances to resolve the stream
+    for idx, instance in enumerate(clean_list[:12]):
         try:
             print(f"[Invidious] Attempting to resolve stream for {youtube_id} via {instance}...")
             url = f"{instance}/api/v1/videos/{youtube_id}"
