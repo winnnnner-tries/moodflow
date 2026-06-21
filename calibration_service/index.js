@@ -30,18 +30,34 @@ app.post('/calibrate', async (req, res) => {
     } catch (e) {}
   };
 
+  const cancelTokenSource = axios.CancelToken.source();
+  let isAborted = false;
+
+  req.on('close', () => {
+    isAborted = true;
+    console.log(`[Calibration] Connection closed by client. Aborting calibration for track ${trackId}`);
+    cancelTokenSource.cancel('Client aborted request');
+  });
+
   try {
     await sendLog('info', `[Service] Fetching stream for youtubeId: ${youtubeId}`);
     
     // 1. Fetch entire audio stream into a Buffer
     const response = await axios.get(streamUrl, {
       responseType: 'arraybuffer',
+      cancelToken: cancelTokenSource.token,
       headers: {
         'User-Agent': 'Mozilla/5.0 (Windows NT 10.0; Win64; x64) AppleWebKit/537.36 (KHTML, like Gecko) Chrome/120.0.0.0 Safari/537.36'
       }
     });
 
     const buffer = Buffer.from(response.data);
+    
+    if (isAborted) {
+      console.log(`[Calibration] Already aborted before decoding track ${trackId}`);
+      return;
+    }
+    
     await sendLog('info', `[Service] Stream fetched. Decoding audio bytes (size: ${buffer.length})...`);
     
     // 2. Decode the buffer
@@ -56,6 +72,11 @@ app.post('/calibrate', async (req, res) => {
 
     const sampleRate = audioBuffer.sampleRate || 44100;
     const length = channelData.length;
+
+    if (isAborted) {
+      console.log(`[Calibration] Already aborted before Essentia analysis for track ${trackId}`);
+      return;
+    }
 
     await sendLog('info', `[Service] Audio decoded: ${length} samples at ${sampleRate}Hz. Running Essentia DSP analysis...`);
 
@@ -151,6 +172,11 @@ app.post('/calibrate', async (req, res) => {
       loudness: parseFloat(loudness.toFixed(4))
     };
 
+    if (isAborted) {
+      console.log(`[Calibration] Already aborted before patching DB for track ${trackId}`);
+      return;
+    }
+
     console.log(`[Calibration] Analysis success for track ${trackId}:`, features);
     await sendLog('info', `[Service] DSP analysis complete. Patching track in DB: ${JSON.stringify(features)}`);
     
@@ -166,9 +192,22 @@ app.post('/calibrate', async (req, res) => {
     
     res.json({ success: true, features });
   } catch (err) {
+    if (axios.isCancel(err)) {
+      console.log(`[Calibration] Axios request cancelled for track ${trackId}`);
+      if (!res.headersSent) {
+        res.status(499).json({ error: 'Calibration aborted by client' });
+      }
+      return;
+    }
+    if (isAborted) {
+      console.log(`[Calibration] Request was aborted by client, ignoring error: ${err.message}`);
+      return;
+    }
     console.error(`[Calibration] Failed for track ${trackId}:`, err.message);
     await sendLog('error', `Failed to calibrate track ${trackId}`, err.stack || err.message);
-    res.status(500).json({ error: err.message });
+    if (!res.headersSent) {
+      res.status(500).json({ error: err.message });
+    }
   }
 });
 

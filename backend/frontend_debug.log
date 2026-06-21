@@ -11239,3 +11239,8 @@ po":0.3576,"acousticness":0.3924,"instrumentalness":0.0809,"speechiness":0.096,"
     at http://localhost:5173/src/hooks/useEssentia.js:26:15
     at async processNext (http://localhost:5173/src/App.jsx:164:11)
 ----------------------------------------
+[2026-06-21T01:05:20.944994] [INFO] [Queue] Starting calibration
+  Track: Grief Beneath The Stolen Land
+----------------------------------------
+[2026-06-21T01:05:41.143601] [INFO] [Service] Fetching stream for youtubeId: 0FWyd0P5wcs
+----------------------------------------

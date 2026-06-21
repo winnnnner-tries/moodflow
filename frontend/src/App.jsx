@@ -72,7 +72,7 @@ export function App() {
     updateLanguagePref
   } = useTasteProfile();
 
-  const { analyzeTrack } = useEssentia();
+  const { analyzeTrack, abortCalibration } = useEssentia();
   const { searchTrack, searchTracks, getStreamUrl, loading: innertubeLoading } = useInnertube();
 
   // Background Calibration states
@@ -80,15 +80,50 @@ export function App() {
   const [calibrationProgress, setCalibrationProgress] = useState({ current: 0, total: 0 });
   const [isCalibratingActive, setIsCalibratingActive] = useState(false);
   const isCalibratingRef = useRef(false);
+  const [isAutoCalibrationMode, setIsAutoCalibrationMode] = useState(false);
 
-  // Fetch dummy tracks on mount (Disabled to prevent YouTube bot blocking and IP bans)
-  /*
+  // Toggle handler for auto calibration mode
+  const handleToggleAutoCalibration = () => {
+    if (!isAutoCalibrationMode) {
+      // Pause playing song to prevent conflicts
+      pause();
+      setIsAutoCalibrationMode(true);
+    } else {
+      setIsAutoCalibrationMode(false);
+    }
+  };
+
+  // Play/pause sync calibration handler
   useEffect(() => {
-    const fetchDummyTracks = async () => {
+    // Only calibrate playing track on-demand when Auto-Calibration is OFF
+    if (isAutoCalibrationMode) return;
+
+    if (isPlaying && currentTrack) {
+      const isPlaceholder = currentTrack.energy === 0.5 && currentTrack.danceability === 0.5 && currentTrack.valence === 0.5;
+      if (currentTrack.energy === null || currentTrack.energy === undefined || isPlaceholder) {
+        console.log(`[Calibration] Playback active. Triggering background Essentia analysis for "${currentTrack.track_name}"...`);
+        const streamUrl = `${API_BASE_URL}/stream/${currentTrack.youtube_id}`;
+        analyzeTrack(currentTrack.id, streamUrl);
+      }
+    } else {
+      // Abort active player calibration if song is paused/changed
+      abortCalibration();
+    }
+  }, [isPlaying, currentTrack, isAutoCalibrationMode, analyzeTrack, abortCalibration]);
+
+  // Background Loop 1: Fetch uncalibrated tracks when Auto-Calibration mode is enabled
+  useEffect(() => {
+    if (!isAutoCalibrationMode) {
+      setCalibrationQueue([]);
+      setCalibrationProgress({ current: 0, total: 0 });
+      return;
+    }
+
+    const fetchUncalibratedTracks = async () => {
       try {
-        console.log("[Calibration] Scanning database for dummy tracks...");
+        console.log("[Calibration] Scanning database for uncalibrated tracks...");
         
-        // 1. Fetch exact total count of uncalibrated tracks (no limit)
+        // Fetch count
         const { count, error: countError } = await supabase
           .from('tracks')
           .select('*', { count: 'exact', head: true })
@@ -102,7 +137,7 @@ export function App() {
         
         console.log(`[Calibration] Found total ${count} uncalibrated tracks in database.`);
 
-        // 2. Fetch first batch of 50 tracks to process
+        // Fetch first batch of 50 tracks
         const { data, error } = await supabase
           .from('tracks')
           .select('*')
@@ -117,22 +152,26 @@ export function App() {
         if (error) throw error;
         
         if (data && data.length > 0) {
-          console.log(`[Calibration] Loaded initial batch of ${data.length} tracks.`);
           setCalibrationQueue(data);
           setCalibrationProgress({ current: 0, total: count || data.length });
+        } else {
+          setToast({
+            id: Date.now(),
+            message: "All tracks are already calibrated!"
+          });
+          setIsAutoCalibrationMode(false);
         }
       } catch (err) {
-        console.error("[Calibration] Error fetching dummy tracks:", err);
+        console.error("[Calibration] Error fetching uncalibrated tracks:", err);
       }
     };
-    fetchDummyTracks();
-  }, []);
-  */
 
-  // Load next batch of uncalibrated tracks when local queue runs low (Disabled)
-  /*
+    fetchUncalibratedTracks();
+  }, [isAutoCalibrationMode]);
+
+  // Background Loop 2: Fetch next batch when local queue runs low during Auto-Calibration
   useEffect(() => {
-    if (isPlaying) return;
+    if (!isAutoCalibrationMode) return;
     
     const remainingToCalibrate = calibrationProgress.total - calibrationProgress.current;
     if (calibrationQueue.length < 5 && remainingToCalibrate > calibrationQueue.length) {
@@ -165,102 +204,96 @@ export function App() {
       
       fetchNextBatch();
     }
-  }, [calibrationQueue.length, calibrationProgress.total, calibrationProgress.current, isPlaying]);
-  */
+  }, [calibrationQueue.length, calibrationProgress.total, calibrationProgress.current, isAutoCalibrationMode]);
 
-
-  // Process calibration queue sequentially when audio is idle (Disabled)
-  /*
+  // Background Loop 3: Process calibration queue sequentially when Auto-Calibration mode is active
   useEffect(() => {
-    if (calibrationQueue.length === 0 || isPlaying || isCalibratingRef.current) {
+    if (!isAutoCalibrationMode || calibrationQueue.length === 0 || isCalibratingRef.current) {
       setIsCalibratingActive(isCalibratingRef.current);
       return;
     }
 
     let isMounted = true;
+    const backgroundAbortController = new AbortController();
+    const CALIBRATION_SERVICE_URL = import.meta.env.VITE_CALIBRATION_SERVICE_URL || 'http://localhost:8001';
     
     const processNext = async () => {
-      if (isCalibratingRef.current || isPlaying) return;
+      if (isCalibratingRef.current || !isAutoCalibrationMode) return;
       isCalibratingRef.current = true;
       setIsCalibratingActive(true);
 
       const track = calibrationQueue[0];
-      console.log(`[Calibration] Queue processing started for track: "${track.track_name}" by "${track.artist}" (ID: ${track.id})`);
-
-      const sendLog = async (level, message, error = null) => {
-        try {
-          await fetch(`${API_BASE_URL}/log`, {
-            method: 'POST',
-            headers: { 'Content-Type': 'application/json' },
-            body: JSON.stringify({ level, message, track_name: track.track_name, error })
-          });
-        } catch (e) {}
-      };
+      console.log(`[Calibration Loop] Starting for: "${track.track_name}" (ID: ${track.id})`);
 
       try {
-        await sendLog('info', `[Queue] Starting calibration`);
         let youtube_id = track.youtube_id;
         if (!youtube_id) {
-          console.log(`[Calibration] YouTube ID is missing. Resolving for "${track.track_name}"...`);
-          await sendLog('info', `[Queue] YouTube ID missing, searching...`);
           const resolved = await searchTrack(`${track.track_name} ${track.artist}`);
           if (resolved && resolved.youtube_id) {
             youtube_id = resolved.youtube_id;
-            console.log(`[Calibration] YouTube ID resolved to: ${youtube_id}`);
-            await sendLog('info', `[Queue] YouTube ID resolved to: ${youtube_id}`);
           }
         }
 
-        if (youtube_id) {
+        if (youtube_id && isMounted && isAutoCalibrationMode) {
           const streamUrl = `${API_BASE_URL}/stream/${youtube_id}`;
-          console.log(`[Calibration] Resolving stream and extracting features via Essentia for "${track.track_name}"...`);
           
-          // 120-second timeout promise to prevent hanging on corrupted/slow streams
           const timeoutPromise = new Promise((_, reject) => 
-            setTimeout(() => reject(new Error("Audio analysis timed out after 120 seconds")), 120000)
+            setTimeout(() => reject(new Error("Audio analysis timed out")), 120000)
           );
           
-          // Race the analysis against the timeout
+          const analyzePromise = (async () => {
+            const response = await fetch(`${CALIBRATION_SERVICE_URL}/calibrate`, {
+              method: 'POST',
+              headers: { 'Content-Type': 'application/json' },
+              body: JSON.stringify({ trackId: track.id, youtubeId: youtube_id }),
+              signal: backgroundAbortController.signal
+            });
+            if (!response.ok) throw new Error(`Calibration returned status ${response.status}`);
+            return response.json();
+          })();
+
           await Promise.race([
-            analyzeTrack(track.id, streamUrl),
+            analyzePromise,
             timeoutPromise
           ]);
           
-          console.log(`[Calibration] Done processing track: "${track.track_name}"`);
-          await sendLog('info', `[Queue] Calibration complete`);
-        } else {
-          console.warn(`[Calibration] Skip track (Could not resolve YouTube ID): "${track.track_name}"`);
-          await sendLog('warning', `[Queue] Skip track: Could not resolve YouTube ID`);
+          console.log(`[Calibration Loop] Done processing: "${track.track_name}"`);
         }
       } catch (err) {
-        console.error(`[Calibration] Error processing track "${track.track_name}":`, err.message || err);
-        await sendLog('error', `[Queue] Error processing track`, err.stack || err.message || String(err));
+        if (err.name === 'AbortError') {
+          console.log(`[Calibration Loop] Aborted processing for "${track.track_name}".`);
+          return; // Stop processing further if aborted
+        }
+        console.error(`[Calibration Loop] Error processing track "${track.track_name}":`, err.message || err);
         
-        // Mark as failed/processed with a minor offset in DB to prevent infinite retry loops
+        // Mark as failed/processed with minor offset in DB to prevent infinite retry loops
         try {
-          await fetch(`${API_BASE_URL}/tracks/${track.id}`, {
-            method: 'PATCH',
-            headers: { 'Content-Type': 'application/json' },
-            body: JSON.stringify({
-              energy: 0.5001,
-              danceability: 0.5001,
-              valence: 0.5001,
-              tempo: 0.5001,
-              acousticness: 0.5001
-            })
-          });
+          if (isMounted && isAutoCalibrationMode) {
+            await fetch(`${API_BASE_URL}/tracks/${track.id}`, {
+              method: 'PATCH',
+              headers: { 'Content-Type': 'application/json' },
+              body: JSON.stringify({
+                energy: 0.5001,
+                danceability: 0.5001,
+                valence: 0.5001,
+                tempo: 0.5001,
+                acousticness: 0.5001
+              })
+            });
+          }
         } catch (patchErr) {
-          console.error("[Calibration] Failed to mark track as failed in DB:", patchErr);
+          console.error("[Calibration Loop] Failed to mark track in DB:", patchErr);
         }
       } finally {
-        isCalibratingRef.current = false;
-        setIsCalibratingActive(false);
-        setCalibrationQueue(prev => prev.slice(1));
-        setCalibrationProgress(prev => ({ ...prev, current: prev.current + 1 }));
+        if (isMounted && isAutoCalibrationMode) {
+          isCalibratingRef.current = false;
+          setIsCalibratingActive(false);
+          setCalibrationQueue(prev => prev.slice(1));
+          setCalibrationProgress(prev => ({ ...prev, current: prev.current + 1 }));
+        }
       }
     };
 
-    // Delay 2 seconds before running to let UI settle
     const timer = setTimeout(() => {
       processNext();
     }, 2000);
@@ -268,9 +301,11 @@ export function App() {
     return () => {
       isMounted = false;
       clearTimeout(timer);
+      backgroundAbortController.abort();
+      isCalibratingRef.current = false;
+      setIsCalibratingActive(false);
     };
-  }, [calibrationQueue, isPlaying]);
-  */
+  }, [calibrationQueue, isAutoCalibrationMode]);
 
   const currentTrack = currentTrackIndex >= 0 && currentTrackIndex < queue.length ? queue[currentTrackIndex] : null;
 
@@ -365,6 +400,13 @@ export function App() {
   }, [currentTrack]);
 
   const loadAndPlayTrack = async (track, index, customQueue = null) => {
+    if (isAutoCalibrationMode) {
+      setToast({
+        id: Date.now(),
+        message: "Please turn off auto-calibration mode"
+      });
+      return;
+    }
     setPlaybackError(null);
     hasLoggedProfileUpdateRef.current = false;
     
@@ -438,15 +480,6 @@ export function App() {
       // Reset consecutive failure counter on success
       consecutiveFailsRef.current = 0;
 
-      // 4. Trigger background Web Worker analysis (non-blocking)
-      // Runs if parameters are missing OR set to the default placeholders (0.5)
-      const isPlaceholder = activeTrack.energy === 0.5 && activeTrack.danceability === 0.5 && activeTrack.valence === 0.5;
-      if (activeTrack.energy === null || activeTrack.energy === undefined || isPlaceholder) {
-        console.log("Parameters are missing or placeholders. Starting background Essentia analysis...");
-        analyzeTrack(activeTrack.id, streamUrl);
-      }
-
-
     } catch (err) {
       if (err.name === "AbortError" || err.message?.includes("interrupted by a call to pause")) {
         console.log("Play request was safely aborted/interrupted.");
@@ -471,6 +504,13 @@ export function App() {
   };
 
   const handleSelectTrack = (track, tracksList, index) => {
+    if (isAutoCalibrationMode) {
+      setToast({
+        id: Date.now(),
+        message: "Please turn off auto-calibration mode"
+      });
+      return;
+    }
     consecutiveFailsRef.current = 0; // User action resets fail counter
     
     // If we clicked a song card on feed with a feed list
@@ -497,6 +537,13 @@ export function App() {
   };
 
   const handleSelectSearchTrack = async (searchTrackItem) => {
+    if (isAutoCalibrationMode) {
+      setToast({
+        id: Date.now(),
+        message: "Please turn off auto-calibration mode"
+      });
+      return;
+    }
     consecutiveFailsRef.current = 0; // User action resets fail counter
     
     try {
@@ -525,6 +572,13 @@ export function App() {
   };
 
   const handlePlayTrackFromQueue = (index) => {
+    if (isAutoCalibrationMode) {
+      setToast({
+        id: Date.now(),
+        message: "Please turn off auto-calibration mode"
+      });
+      return;
+    }
     consecutiveFailsRef.current = 0;
     setCurrentTrackIndex(index);
     loadAndPlayTrack(queue[index], index);
@@ -532,6 +586,13 @@ export function App() {
   };
 
   const handleNext = () => {
+    if (isAutoCalibrationMode) {
+      setToast({
+        id: Date.now(),
+        message: "Please turn off auto-calibration mode"
+      });
+      return;
+    }
     if (queue.length <= 1) {
       setToast({
         id: Date.now(),
@@ -545,6 +606,13 @@ export function App() {
   };
 
   const handlePrevious = () => {
+    if (isAutoCalibrationMode) {
+      setToast({
+        id: Date.now(),
+        message: "Please turn off auto-calibration mode"
+      });
+      return;
+    }
     if (queue.length <= 1) {
       setToast({
         id: Date.now(),
@@ -721,6 +789,8 @@ export function App() {
                 currentPlayingTrack={currentTrack}
                 onPlayNext={handlePlayNext}
                 onAddToQueue={handleAddToQueue}
+                isAutoCalibrationMode={isAutoCalibrationMode}
+                onToggleAutoCalibration={handleToggleAutoCalibration}
               />
             ) : (
               <PlayerScreen 

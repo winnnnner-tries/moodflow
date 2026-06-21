@@ -34,7 +34,9 @@ export function FeedScreen({
   searchService,
   currentPlayingTrack,
   onPlayNext,
-  onAddToQueue
+  onAddToQueue,
+  isAutoCalibrationMode,
+  onToggleAutoCalibration
 }) {
   const [selectedLanguage, setSelectedLanguage] = useState(localStorage.getItem("moodflow_user_lang") || 'en');
   const [showOnboarding, setShowOnboarding] = useState(!localStorage.getItem("moodflow_user_lang"));
@@ -454,11 +456,24 @@ export function FeedScreen({
           <h1>{greeting.text} {greeting.emoji}</h1>
           <span className="brand-subtitle">MoodFlow</span>
         </div>
-        <div className="current-lang-badge" onClick={() => setShowOnboarding(true)}>
-          <span>🌐 {LANGUAGES.find(l => l.code === selectedLanguage)?.name || 'Select Lang'}</span>
-          <svg width="12" height="12" viewBox="0 0 24 24" fill="none" stroke="currentColor" strokeWidth="2.5" style={{marginLeft: '4px'}}>
-            <path d="M17 3a2.85 2.83 0 1 1 4 4L7.5 20.5 2 22l1.5-5.5Z"/>
-          </svg>
+        <div className="feed-header-controls">
+          <button 
+            className={`auto-calib-badge ${isAutoCalibrationMode ? 'active' : ''}`}
+            onClick={(e) => {
+              e.stopPropagation();
+              onToggleAutoCalibration();
+            }}
+            title={isAutoCalibrationMode ? "Turn OFF Auto-Calibration" : "Turn ON Auto-Calibration"}
+          >
+            ⚙️ {isAutoCalibrationMode ? 'Auto-Calib: ON' : 'Auto-Calib: OFF'}
+          </button>
+          
+          <div className="current-lang-badge" onClick={() => setShowOnboarding(true)}>
+            <span>🌐 {LANGUAGES.find(l => l.code === selectedLanguage)?.name || 'Select Lang'}</span>
+            <svg width="12" height="12" viewBox="0 0 24 24" fill="none" stroke="currentColor" strokeWidth="2.5" style={{marginLeft: '4px'}}>
+              <path d="M17 3a2.85 2.83 0 1 1 4 4L7.5 20.5 2 22l1.5-5.5Z"/>
+            </svg>
+          </div>
         </div>
       </header>
 

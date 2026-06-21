@@ -1724,6 +1724,40 @@ body {
   border-color: var(--accent);
 }
 
+.feed-header-controls {
+  display: flex;
+  align-items: center;
+  gap: 12px;
+}
+
+.auto-calib-badge {
+  display: flex;
+  align-items: center;
+  background-color: var(--card-bg);
+  border: 1px solid var(--surface-border);
+  padding: 8px 14px;
+  border-radius: 20px;
+  font-size: 13px;
+  font-weight: 600;
+  cursor: pointer;
+  color: var(--text-secondary);
+  transition: all var(--transition-fast);
+}
+
+.auto-calib-badge.active {
+  background: linear-gradient(135deg, rgba(244, 63, 94, 0.2) 0%, rgba(154, 130, 255, 0.2) 100%);
+  border-color: var(--accent);
+  color: var(--accent);
+  box-shadow: 0 0 10px rgba(154, 130, 255, 0.25);
+}
+
+.auto-calib-badge:hover {
+  background-color: var(--bg-surface);
+  border-color: var(--accent);
+  color: var(--text-primary);
+  transform: translateY(-1px);
+}
+
 /* ===== Bottom Mini Player Bar ===== */
 .bottom-mini-player {
   width: 100%;

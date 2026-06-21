@@ -18,6 +18,65 @@ def search_tracks(q: str = Query(..., description="Search query")):
         print(f"Error in search_tracks: {e}")
         raise HTTPException(status_code=500, detail=str(e))
 
+cached_invidious_instances = []
+
+def resolve_stream_invidious(youtube_id: str) -> str:
+    global cached_invidious_instances
+    import urllib.request
+    import json
+    import ssl
+    
+    # Try fetching instances list if cache is empty
+    if not cached_invidious_instances:
+        try:
+            print("[Invidious] Fetching public instances list...")
+            ssl_context = ssl._create_unverified_context()
+            req = urllib.request.Request("https://api.invidious.io/instances.json", headers={"User-Agent": "Mozilla/5.0"})
+            with urllib.request.urlopen(req, context=ssl_context, timeout=5) as response:
+                instances_data = json.loads(response.read().decode())
+                # Extract URIs of healthy instances
+                for item in instances_data:
+                    uri = item[1].get("uri")
+                    # filter type = "https" and has uri
+                    if uri and item[1].get("type") == "https":
+                        cached_invidious_instances.append(uri)
+        except Exception as e:
+            print(f"[Invidious] Failed to fetch instances list: {e}")
+            
+    # Fallback to hardcoded list if fetching failed
+    fallback_list = [
+        "https://inv.nadeko.net",
+        "https://invidious.nerdvpn.de",
+        "https://invidious.no-logs.com",
+        "https://invidious.projectsegfau.lt"
+    ]
+    
+    search_list = cached_invidious_instances if cached_invidious_instances else fallback_list
+    
+    # Try up to 6 instances to resolve the stream
+    for idx, instance in enumerate(search_list[:6]):
+        try:
+            print(f"[Invidious] Attempting to resolve stream for {youtube_id} via {instance}...")
+            url = f"{instance}/api/v1/videos/{youtube_id}"
+            req = urllib.request.Request(url, headers={"User-Agent": "Mozilla/5.0"})
+            ssl_context = ssl._create_unverified_context()
+            with urllib.request.urlopen(req, context=ssl_context, timeout=5) as response:
+                data = json.loads(response.read().decode())
+                formats = data.get("adaptiveFormats", [])
+                # Extract audio-only formats
+                audio_formats = [f for f in formats if f.get("type", "").startswith("audio/")]
+                if audio_formats:
+                    # Sort to get highest quality / mp4 if preferred
+                    audio_formats.sort(key=lambda x: int(x.get("bitrate", 0)), reverse=True)
+                    stream_url = audio_formats[0].get("url")
+                    if stream_url:
+                        print(f"[Invidious] Stream resolved successfully via {instance}!")
+                        return stream_url
+        except Exception as e:
+            print(f"[Invidious] Failed to resolve via {instance}: {e}")
+            
+    raise Exception("All Invidious instances failed to resolve stream")
+
 @router.get("/stream/{youtube_id}")
 def get_stream_url(youtube_id: str, request: Request):
     try:
@@ -43,7 +102,10 @@ def get_stream_url(youtube_id: str, request: Request):
             try:
                 url = innertube_service.get_stream_url(youtube_id)
             except Exception as innertube_err:
-                raise Exception(f"yt-dlp resolution failed: {yt_err} | innertube resolution failed: {innertube_err}")
+                try:
+                    url = resolve_stream_invidious(youtube_id)
+                except Exception as invidious_err:
+                    raise Exception(f"yt-dlp resolution failed: {yt_err} | innertube resolution failed: {innertube_err} | invidious fallback failed: {invidious_err}")
 
         base_headers = {
             "User-Agent": "Mozilla/5.0 (Windows NT 10.0; Win64; x64) AppleWebKit/537.36 (KHTML, like Gecko) Chrome/120.0.0.0 Safari/537.36"
