@@ -24,6 +24,7 @@ export function App() {
   const [screen, setScreen] = useState('feed'); // 'feed' | 'player'
   const [queue, setQueue] = useState([]);
   const [currentTrackIndex, setCurrentTrackIndex] = useState(-1);
+  const currentTrack = currentTrackIndex >= 0 && currentTrackIndex < queue.length ? queue[currentTrackIndex] : null;
   const [playbackError, setPlaybackError] = useState(null);
 
   // Drawers visibility states
@@ -306,8 +307,6 @@ export function App() {
       setIsCalibratingActive(false);
     };
   }, [calibrationQueue, isAutoCalibrationMode]);
-
-  const currentTrack = currentTrackIndex >= 0 && currentTrackIndex < queue.length ? queue[currentTrackIndex] : null;
 
   // Compute effective duration: prefer audio element duration if valid, else fallback to track metadata
   const effectiveDuration = (() => {
