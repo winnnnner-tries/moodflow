@@ -401,56 +401,6 @@ export function App() {
     };
   }, [sleepTime]);
 
-  // Sync Media Session API metadata for OS-level music controls
-  useEffect(() => {
-    if (!currentTrack || !('mediaSession' in navigator)) return;
-
-    try {
-      navigator.mediaSession.metadata = new MediaMetadata({
-        title: currentTrack.track_name,
-        artist: currentTrack.artist,
-        album: currentTrack.album || 'MoodFlow',
-        artwork: [
-          { 
-            src: currentTrack.thumbnail_url || `https://i.ytimg.com/vi/${currentTrack.youtube_id}/mqdefault.jpg`, 
-            sizes: '512x512', 
-            type: 'image/jpeg' 
-          }
-        ]
-      });
-    } catch (e) {
-      console.warn("Failed to set MediaSession metadata:", e);
-    }
-  }, [currentTrack]);
-
-  useEffect(() => {
-    if (!('mediaSession' in navigator)) return;
-    navigator.mediaSession.playbackState = isPlaying ? 'playing' : 'paused';
-  }, [isPlaying]);
-
-  useEffect(() => {
-    if (!('mediaSession' in navigator)) return;
-    
-    try {
-      navigator.mediaSession.setActionHandler('play', play);
-      navigator.mediaSession.setActionHandler('pause', pause);
-      navigator.mediaSession.setActionHandler('previoustrack', handlePrevious);
-      navigator.mediaSession.setActionHandler('nexttrack', handleNext);
-    } catch (e) {
-      console.warn("Failed to set MediaSession action handlers:", e);
-    }
-    
-    return () => {
-      if (!('mediaSession' in navigator)) return;
-      try {
-        navigator.mediaSession.setActionHandler('play', null);
-        navigator.mediaSession.setActionHandler('pause', null);
-        navigator.mediaSession.setActionHandler('previoustrack', null);
-        navigator.mediaSession.setActionHandler('nexttrack', null);
-      } catch (e) {}
-    };
-  }, [play, pause, handlePrevious, handleNext]);
-
   // Pre-resolve the stream URL of the next track in the queue to enable instant transition
   useEffect(() => {
     if (!currentTrack || currentTrackIndex === -1 || queue.length <= 1) return;
@@ -738,6 +688,56 @@ export function App() {
       message: `Added "${track.track_name}" to queue`
     });
   };
+
+  // Sync Media Session API metadata for OS-level music controls
+  useEffect(() => {
+    if (!currentTrack || !('mediaSession' in navigator)) return;
+
+    try {
+      navigator.mediaSession.metadata = new MediaMetadata({
+        title: currentTrack.track_name,
+        artist: currentTrack.artist,
+        album: currentTrack.album || 'MoodFlow',
+        artwork: [
+          { 
+            src: currentTrack.thumbnail_url || `https://i.ytimg.com/vi/${currentTrack.youtube_id}/mqdefault.jpg`, 
+            sizes: '512x512', 
+            type: 'image/jpeg' 
+          }
+        ]
+      });
+    } catch (e) {
+      console.warn("Failed to set MediaSession metadata:", e);
+    }
+  }, [currentTrack]);
+
+  useEffect(() => {
+    if (!('mediaSession' in navigator)) return;
+    navigator.mediaSession.playbackState = isPlaying ? 'playing' : 'paused';
+  }, [isPlaying]);
+
+  useEffect(() => {
+    if (!('mediaSession' in navigator)) return;
+    
+    try {
+      navigator.mediaSession.setActionHandler('play', play);
+      navigator.mediaSession.setActionHandler('pause', pause);
+      navigator.mediaSession.setActionHandler('previoustrack', handlePrevious);
+      navigator.mediaSession.setActionHandler('nexttrack', handleNext);
+    } catch (e) {
+      console.warn("Failed to set MediaSession action handlers:", e);
+    }
+    
+    return () => {
+      if (!('mediaSession' in navigator)) return;
+      try {
+        navigator.mediaSession.setActionHandler('play', null);
+        navigator.mediaSession.setActionHandler('pause', null);
+        navigator.mediaSession.setActionHandler('previoustrack', null);
+        navigator.mediaSession.setActionHandler('nexttrack', null);
+      } catch (e) {}
+    };
+  }, [play, pause, handlePrevious, handleNext]);
 
   return (
     <div className="app-container">
