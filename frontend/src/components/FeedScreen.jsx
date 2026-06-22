@@ -36,7 +36,8 @@ export function FeedScreen({
   onPlayNext,
   onAddToQueue,
   isAutoCalibrationMode,
-  onToggleAutoCalibration
+  onToggleAutoCalibration,
+  onHoverTrack
 }) {
   const [selectedLanguage, setSelectedLanguage] = useState(localStorage.getItem("moodflow_user_lang") || 'en');
   const [showOnboarding, setShowOnboarding] = useState(!localStorage.getItem("moodflow_user_lang"));
@@ -279,6 +280,45 @@ export function FeedScreen({
     }
   };
 
+  // Pre-resolve top 6 tracks in feed in the background on load to warm up backend cache
+  useEffect(() => {
+    let topTracks = [];
+    if (feedSections && feedSections.length > 0) {
+      for (const sec of feedSections) {
+        const tList = sec.tracks || [];
+        for (const t of tList) {
+          if (t && t.youtube_id) {
+            topTracks.push(t);
+            if (topTracks.length >= 6) break;
+          }
+        }
+        if (topTracks.length >= 6) break;
+      }
+    } else if (tracks && tracks.length > 0) {
+      topTracks = tracks.slice(0, 6);
+    }
+
+    if (topTracks.length === 0) return;
+
+    // Stagger calls by 400ms to avoid network traffic spikes
+    const timers = [];
+    topTracks.forEach((track, index) => {
+      const timer = setTimeout(async () => {
+        try {
+          await fetch(`${API_BASE_URL}/stream/${track.youtube_id}`);
+          console.log(`[Feed Pre-resolve] Warmed up cache for top song: "${track.track_name}"`);
+        } catch (e) {
+          console.warn("[Feed Pre-resolve] Failed to warm up cache:", e);
+        }
+      }, index * 400);
+      timers.push(timer);
+    });
+
+    return () => {
+      timers.forEach(clearTimeout);
+    };
+  }, [feedSections, tracks]);
+
   // Trigger feed reload when language or parameters change
   useEffect(() => {
     fetchFeed(selectedLanguage, params);
@@ -391,6 +431,7 @@ export function FeedScreen({
                   onClick={() => onSelectTrack(track, sectionTracks, index)}
                   onPlayNext={onPlayNext}
                   onAddToQueue={onAddToQueue}
+                  onHover={onHoverTrack}
                 />
               </div>
             );
@@ -419,6 +460,7 @@ export function FeedScreen({
               onClick={() => onSelectTrack(track, sectionTracks, index)}
               onPlayNext={onPlayNext}
               onAddToQueue={onAddToQueue}
+              onHover={onHoverTrack}
             />
           ))}
         </div>
@@ -811,6 +853,7 @@ export function FeedScreen({
                       onClick={() => onSelectTrack(track, tracks, tracks.length > 4 ? index + 12 : index)}
                       onPlayNext={onPlayNext}
                       onAddToQueue={onAddToQueue}
+                      onHover={onHoverTrack}
                     />
                   ))}
                 </div>

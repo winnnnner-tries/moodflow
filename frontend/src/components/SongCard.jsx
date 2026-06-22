@@ -1,9 +1,10 @@
 import React, { useState, useEffect, useRef } from 'react';
 
-export function SongCard({ track, onClick, onPlayNext, onAddToQueue }) {
+export function SongCard({ track, onClick, onPlayNext, onAddToQueue, onHover }) {
   const { youtube_id, track_name, artist, thumbnail_url } = track;
   const [showMenu, setShowMenu] = useState(false);
   const menuRef = useRef(null);
+  const hoverTimerRef = useRef(null);
   
   // Default to YouTube Music standard CDN thumbnail if none is provided
   const imgUrl = thumbnail_url || (youtube_id ? `https://i.ytimg.com/vi/${youtube_id}/mqdefault.jpg` : '');
@@ -21,10 +22,34 @@ export function SongCard({ track, onClick, onPlayNext, onAddToQueue }) {
     };
   }, [showMenu]);
 
+  const handleMouseEnter = () => {
+    if (hoverTimerRef.current) clearTimeout(hoverTimerRef.current);
+    
+    hoverTimerRef.current = setTimeout(() => {
+      if (track && track.youtube_id && onHover) {
+        onHover(track);
+      }
+    }, 100);
+  };
+
+  const handleMouseLeave = () => {
+    if (hoverTimerRef.current) {
+      clearTimeout(hoverTimerRef.current);
+    }
+  };
+
+  useEffect(() => {
+    return () => {
+      if (hoverTimerRef.current) clearTimeout(hoverTimerRef.current);
+    };
+  }, []);
+
   return (
     <div 
       className="song-card" 
       onClick={onClick}
+      onMouseEnter={handleMouseEnter}
+      onMouseLeave={handleMouseLeave}
       role="button"
       tabIndex={0}
       id={`track-card-${track.id}`}

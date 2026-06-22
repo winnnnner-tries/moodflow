@@ -566,6 +566,20 @@ export function App() {
     }
   };
 
+  const preResolvedTracksRef = useRef(new Set());
+  const handleTrackHover = useCallback((track) => {
+    if (!track || !track.youtube_id) return;
+    const ytId = track.youtube_id;
+    if (preResolvedTracksRef.current.has(ytId)) return;
+    
+    preResolvedTracksRef.current.add(ytId);
+    console.log(`[Hover Pre-resolve] Warming up backend stream cache for: "${track.track_name}"`);
+    fetch(`${API_BASE_URL}/stream/${ytId}`).catch(err => {
+      console.warn("[Hover Pre-resolve] Failed to pre-resolve:", err);
+      preResolvedTracksRef.current.delete(ytId);
+    });
+  }, []);
+
   const handleSelectTrack = (track, tracksList, index) => {
     consecutiveFailsRef.current = 0; // User action resets fail counter
     
@@ -921,6 +935,7 @@ export function App() {
                 onAddToQueue={handleAddToQueue}
                 isAutoCalibrationMode={isAutoCalibrationMode}
                 onToggleAutoCalibration={handleToggleAutoCalibration}
+                onHoverTrack={handleTrackHover}
               />
             ) : (
               <PlayerScreen 
