@@ -63,8 +63,8 @@ def resolve_stream_cobalt(youtube_id: str) -> str:
     import ssl
     
     cobalt_instances = [
-        "https://api.cobalt.blackcat.sweeux.org",
-        "https://rue-cobalt.xenon.zone"
+        "https://rue-cobalt.xenon.zone",
+        "https://api.cobalt.blackcat.sweeux.org"
     ]
     
     video_url = f"https://www.youtube.com/watch?v={youtube_id}"
@@ -78,7 +78,9 @@ def resolve_stream_cobalt(youtube_id: str) -> str:
     body = {
         "url": video_url,
         "downloadMode": "audio",
-        "audioFormat": "mp3"
+        "audioFormat": "mp3",
+        "isAudioOnly": True,
+        "aFormat": "mp3"
     }
     
     ssl_context = ssl._create_unverified_context()
@@ -92,7 +94,7 @@ def resolve_stream_cobalt(youtube_id: str) -> str:
                 headers=headers,
                 method="POST"
             )
-            with urllib.request.urlopen(req, context=ssl_context, timeout=8) as response:
+            with urllib.request.urlopen(req, context=ssl_context, timeout=4) as response:
                 res_data = json.loads(response.read().decode())
                 stream_url = res_data.get("url")
                 if stream_url:
@@ -294,20 +296,30 @@ def get_stream_url(youtube_id: str, request: Request):
             end = int(parts[1]) if parts[1] else total_size - 1
             content_length = end - start + 1
 
+            client = httpx.AsyncClient(timeout=30.0)
+            req_headers = {**base_headers, "Range": f"bytes={start}-{end}"}
+            
+            try:
+                req_obj = client.build_request("GET", url, headers=req_headers)
+                response = await client.send(req_obj, stream=True)
+                print(f"[Stream] Upstream range response status: {response.status_code}")
+                if response.status_code >= 400:
+                    await response.aclose()
+                    await client.aclose()
+                    raise HTTPException(status_code=response.status_code, detail=f"Upstream returned error: {response.status_code}")
+            except HTTPException:
+                raise
+            except Exception as e:
+                await client.aclose()
+                raise HTTPException(status_code=500, detail=f"Failed to connect to upstream: {str(e)}")
+
             async def stream_range():
-                print(f"[Stream] Starting range request bytes={start}-{end} for URL: {url[:100]}...")
                 try:
-                    req_headers = {**base_headers, "Range": f"bytes={start}-{end}"}
-                    async with httpx.AsyncClient(timeout=30.0) as client:
-                        async with client.stream("GET", url, headers=req_headers, follow_redirects=True) as response:
-                            print(f"[Stream] YouTube response status: {response.status_code}")
-                            async for chunk in response.aiter_bytes(chunk_size=65536):
-                                yield chunk
-                    print("[Stream] Range stream generator finished successfully.")
-                except Exception as stream_err:
-                    print(f"[Stream] Exception in stream_range generator: {stream_err}")
-                    import traceback
-                    traceback.print_exc()
+                    async for chunk in response.aiter_bytes(chunk_size=65536):
+                        yield chunk
+                finally:
+                    await response.aclose()
+                    await client.aclose()
 
             return StreamingResponse(
                 stream_range(),
@@ -321,19 +333,28 @@ def get_stream_url(youtube_id: str, request: Request):
             )
 
         # --- Full (non-range) request ------------------------------------
+        client = httpx.AsyncClient(timeout=30.0)
+        try:
+            req_obj = client.build_request("GET", url, headers=base_headers)
+            response = await client.send(req_obj, stream=True)
+            print(f"[Stream] Upstream full response status: {response.status_code}")
+            if response.status_code >= 400:
+                await response.aclose()
+                await client.aclose()
+                raise HTTPException(status_code=response.status_code, detail=f"Upstream returned error: {response.status_code}")
+        except HTTPException:
+            raise
+        except Exception as e:
+            await client.aclose()
+            raise HTTPException(status_code=500, detail=f"Failed to connect to upstream: {str(e)}")
+
         async def stream_full():
-            print(f"[Stream] Starting full stream request for URL: {url[:100]}...")
             try:
-                async with httpx.AsyncClient(timeout=30.0) as client:
-                    async with client.stream("GET", url, headers=base_headers, follow_redirects=True) as response:
-                        print(f"[Stream] Upstream response status: {response.status_code}")
-                        async for chunk in response.aiter_bytes(chunk_size=65536):
-                            yield chunk
-                print("[Stream] Full stream generator finished successfully.")
-            except Exception as stream_err:
-                print(f"[Stream] Exception in stream_full generator: {stream_err}")
-                import traceback
-                traceback.print_exc()
+                async for chunk in response.aiter_bytes(chunk_size=65536):
+                    yield chunk
+            finally:
+                await response.aclose()
+                await client.aclose()
 
         resp_headers = {
             "Accept-Ranges": "none",

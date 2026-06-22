@@ -356,6 +356,58 @@ export function App() {
     };
   }, [audioElement, currentTrackIndex, queue]);
 
+  // Keep a stable ref of loadAndPlayTrack to prevent hook dependency churn
+  const loadAndPlayTrackRef = useRef(loadAndPlayTrack);
+  useEffect(() => {
+    loadAndPlayTrackRef.current = loadAndPlayTrack;
+  });
+
+  // Handle asynchronous playback/decoding errors from the audio element
+  useEffect(() => {
+    if (!audioElement) return;
+
+    const handleAudioError = () => {
+      const err = audioElement.error;
+      console.error("[AudioElement] Asynchronous error event:", err);
+      
+      let msg = "Failed to load audio stream.";
+      if (err) {
+        if (err.code === 1) msg = "Playback aborted by user/system.";
+        else if (err.code === 2) msg = "Network error while downloading audio.";
+        else if (err.code === 3) msg = "Audio decoding failed (unsupported format).";
+        else if (err.code === 4) msg = "Audio stream not supported or blocked.";
+        if (err.message) msg += ` (${err.message})`;
+      }
+      
+      setPlaybackError(msg);
+      setIsPlayerFetching(false);
+
+      consecutiveFailsRef.current += 1;
+      if (consecutiveFailsRef.current >= 3) {
+        console.log("Too many consecutive failures. Stopping auto-skip.");
+        return;
+      }
+
+      // Automatically skip to the next track after a short delay
+      if (queue.length > 1 && currentTrackIndex !== -1) {
+        const nextIdx = (currentTrackIndex + 1) % queue.length;
+        if (nextIdx !== currentTrackIndex) {
+          console.log(`Skipping to next track at index ${nextIdx} due to async audio error...`);
+          setTimeout(() => {
+            if (loadAndPlayTrackRef.current) {
+              loadAndPlayTrackRef.current(queue[nextIdx], nextIdx);
+            }
+          }, 1500);
+        }
+      }
+    };
+
+    audioElement.addEventListener('error', handleAudioError);
+    return () => {
+      audioElement.removeEventListener('error', handleAudioError);
+    };
+  }, [audioElement, currentTrackIndex, queue]);
+
   // Track progress to trigger taste profile updates and play log (>80% listened)
   useEffect(() => {
     if (!currentTrack || effectiveDuration <= 0 || hasLoggedProfileUpdateRef.current) return;
