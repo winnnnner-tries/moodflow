@@ -84,6 +84,11 @@ export function App() {
   const [isAutoCalibrationMode, setIsAutoCalibrationMode] = useState(false);
   const [isPlayerFetching, setIsPlayerFetching] = useState(false);
 
+  // Background Preloading states (to cache audio bytes as Blob URLs for instant playback)
+  const [preloadedBlobs, setPreloadedBlobs] = useState({});
+  const preloadedBlobsRef = useRef({});
+  preloadedBlobsRef.current = preloadedBlobs;
+
   // Draggable Calibration Pill States & Pointer Events Handlers
   const [pillPosition, setPillPosition] = useState({ x: 0, y: 0 });
   const isDraggingRef = useRef(false);
@@ -443,6 +448,86 @@ export function App() {
     }
   }, [currentTrack]);
 
+  // Preload the next track's audio as a Blob URL when the current song has 15 seconds remaining
+  useEffect(() => {
+    if (!currentTrack || duration <= 0 || queue.length <= 1 || currentTrackIndex === -1) return;
+    
+    const nextIdx = (currentTrackIndex + 1) % queue.length;
+    const nextTrack = queue[nextIdx];
+    if (!nextTrack || !nextTrack.youtube_id) return;
+
+    // Trigger preload when 15 seconds are remaining
+    if (currentTime >= duration - 15) {
+      const ytId = nextTrack.youtube_id;
+      // Check if already preloaded or currently preloading
+      if (preloadedBlobsRef.current[ytId]) return;
+
+      // Mark as preloading
+      setPreloadedBlobs(prev => ({ ...prev, [ytId]: 'loading' }));
+
+      console.log(`[Preload] Next track "${nextTrack.track_name}" has 15s remaining. Preloading audio bytes in background...`);
+      
+      fetch(`${API_BASE_URL}/stream/${ytId}`)
+        .then(res => {
+          if (!res.ok) throw new Error(`HTTP ${res.status}`);
+          return res.blob();
+        })
+        .then(blob => {
+          const blobUrl = URL.createObjectURL(blob);
+          console.log(`[Preload] Audio bytes for "${nextTrack.track_name}" preloaded and cached in browser memory!`);
+          setPreloadedBlobs(prev => ({ ...prev, [ytId]: blobUrl }));
+        })
+        .catch(err => {
+          console.warn(`[Preload] Failed to preload audio bytes for "${nextTrack.track_name}":`, err);
+          // Reset status on error so it can retry or fallback
+          setPreloadedBlobs(prev => {
+            const copy = { ...prev };
+            delete copy[ytId];
+            return copy;
+          });
+        });
+    }
+  }, [currentTime, duration, currentTrackIndex, queue, currentTrack]);
+
+  // Cleanup old preloaded blob URLs when track changes to free up browser memory
+  useEffect(() => {
+    if (!currentTrack) return;
+    const activeYtId = currentTrack.youtube_id;
+    
+    // Determine which track is next
+    let nextYtId = null;
+    if (queue.length > 1 && currentTrackIndex !== -1) {
+      const nextIdx = (currentTrackIndex + 1) % queue.length;
+      if (queue[nextIdx]) nextYtId = queue[nextIdx].youtube_id;
+    }
+
+    const currentBlobs = preloadedBlobsRef.current;
+    const keys = Object.keys(currentBlobs);
+    let updated = false;
+    const copy = { ...currentBlobs };
+
+    keys.forEach(ytId => {
+      // Keep only the active (playing) blob and the next (preloaded) blob
+      if (ytId !== activeYtId && ytId !== nextYtId) {
+        const urlToRevoke = currentBlobs[ytId];
+        if (urlToRevoke && urlToRevoke !== 'loading') {
+          try {
+            URL.revokeObjectURL(urlToRevoke);
+            console.log(`[Preload] Revoked unused blob URL for YouTube ID: ${ytId}`);
+          } catch (e) {
+            console.error("Failed to revoke blob URL:", e);
+          }
+        }
+        delete copy[ytId];
+        updated = true;
+      }
+    });
+
+    if (updated) {
+      setPreloadedBlobs(copy);
+    }
+  }, [currentTrack, queue, currentTrackIndex]);
+
   const loadAndPlayTrack = async (track, index, customQueue = null) => {
     setPlaybackError(null);
     hasLoggedProfileUpdateRef.current = false;
@@ -510,7 +595,14 @@ export function App() {
       }
 
       // 2. Direct proxy url on localhost:8000 to avoid CORS
-      const streamUrl = `${API_BASE_URL}/stream/${activeTrack.youtube_id}`;
+      let streamUrl = `${API_BASE_URL}/stream/${activeTrack.youtube_id}`;
+
+      // Check if we have a preloaded blob URL in frontend cache
+      const cachedBlobUrl = preloadedBlobsRef.current[activeTrack.youtube_id];
+      if (cachedBlobUrl && cachedBlobUrl !== 'loading') {
+        console.log(`[Preload] Cache HIT! Using preloaded browser Blob URL for instant playback of "${activeTrack.track_name}".`);
+        streamUrl = cachedBlobUrl;
+      }
 
       // 3. Start audio element playback
       await play(streamUrl);
