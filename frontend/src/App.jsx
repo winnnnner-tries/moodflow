@@ -451,6 +451,27 @@ export function App() {
     };
   }, [play, pause, handlePrevious, handleNext]);
 
+  // Pre-resolve the stream URL of the next track in the queue to enable instant transition
+  useEffect(() => {
+    if (!currentTrack || currentTrackIndex === -1 || queue.length <= 1) return;
+    
+    const nextIdx = (currentTrackIndex + 1) % queue.length;
+    const nextTrack = queue[nextIdx];
+    if (!nextTrack || !nextTrack.youtube_id) return;
+    
+    const timer = setTimeout(async () => {
+      try {
+        console.log(`[Pre-resolve] Background resolving next song: "${nextTrack.track_name}"`);
+        await fetch(`${API_BASE_URL}/stream/${nextTrack.youtube_id}`);
+        console.log(`[Pre-resolve] Next song resolved and cached successfully: "${nextTrack.track_name}"`);
+      } catch (err) {
+        console.log("[Pre-resolve] Failed to pre-resolve next track:", err);
+      }
+    }, 4000);
+    
+    return () => clearTimeout(timer);
+  }, [currentTrackIndex, queue, currentTrack]);
+
   // Update ambient background colors based on current track audio features
   useEffect(() => {
     if (currentTrack) {
