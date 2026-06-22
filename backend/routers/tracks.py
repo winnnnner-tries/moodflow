@@ -301,7 +301,7 @@ async def get_stream_url(youtube_id: str, request: Request):
             
             try:
                 req_obj = client.build_request("GET", url, headers=req_headers)
-                response = await client.send(req_obj, stream=True)
+                response = await client.send(req_obj, stream=True, follow_redirects=True)
                 print(f"[Stream] Upstream range response status: {response.status_code}")
                 if response.status_code >= 400:
                     await response.aclose()
@@ -336,7 +336,7 @@ async def get_stream_url(youtube_id: str, request: Request):
         client = httpx.AsyncClient(timeout=30.0)
         try:
             req_obj = client.build_request("GET", url, headers=base_headers)
-            response = await client.send(req_obj, stream=True)
+            response = await client.send(req_obj, stream=True, follow_redirects=True)
             print(f"[Stream] Upstream full response status: {response.status_code}")
             if response.status_code >= 400:
                 await response.aclose()
