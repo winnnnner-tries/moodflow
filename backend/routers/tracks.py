@@ -18,6 +18,52 @@ def search_tracks(q: str = Query(..., description="Search query")):
         print(f"Error in search_tracks: {e}")
         raise HTTPException(status_code=500, detail=str(e))
 
+def resolve_stream_cobalt(youtube_id: str) -> str:
+    import urllib.request
+    import json
+    import ssl
+    
+    cobalt_instances = [
+        "https://api.cobalt.blackcat.sweeux.org",
+        "https://rue-cobalt.xenon.zone"
+    ]
+    
+    video_url = f"https://www.youtube.com/watch?v={youtube_id}"
+    
+    headers = {
+        "Content-Type": "application/json",
+        "Accept": "application/json",
+        "User-Agent": "Mozilla/5.0 (Windows NT 10.0; Win64; x64) AppleWebKit/537.36 (KHTML, like Gecko) Chrome/120.0.0.0 Safari/537.36"
+    }
+    
+    body = {
+        "url": video_url,
+        "downloadMode": "audio",
+        "audioFormat": "mp3"
+    }
+    
+    ssl_context = ssl._create_unverified_context()
+    
+    for instance in cobalt_instances:
+        try:
+            print(f"[Cobalt] Attempting to resolve stream for {youtube_id} via {instance}...")
+            req = urllib.request.Request(
+                instance, 
+                data=json.dumps(body).encode('utf-8'), 
+                headers=headers,
+                method="POST"
+            )
+            with urllib.request.urlopen(req, context=ssl_context, timeout=8) as response:
+                res_data = json.loads(response.read().decode())
+                stream_url = res_data.get("url")
+                if stream_url:
+                    print(f"[Cobalt] Stream resolved successfully via {instance}!")
+                    return stream_url
+        except Exception as e:
+            print(f"[Cobalt] Failed to resolve via {instance}: {e}")
+            
+    raise Exception("All Cobalt instances failed to resolve stream")
+
 cached_invidious_instances = []
 
 def resolve_stream_invidious(youtube_id: str) -> str:
@@ -118,9 +164,12 @@ def get_stream_url(youtube_id: str, request: Request):
                 url = innertube_service.get_stream_url(youtube_id)
             except Exception as innertube_err:
                 try:
-                    url = resolve_stream_invidious(youtube_id)
-                except Exception as invidious_err:
-                    raise Exception(f"yt-dlp resolution failed: {yt_err} | innertube resolution failed: {innertube_err} | invidious fallback failed: {invidious_err}")
+                    url = resolve_stream_cobalt(youtube_id)
+                except Exception as cobalt_err:
+                    try:
+                        url = resolve_stream_invidious(youtube_id)
+                    except Exception as invidious_err:
+                        raise Exception(f"yt-dlp resolution failed: {yt_err} | innertube resolution failed: {innertube_err} | cobalt fallback failed: {cobalt_err} | invidious fallback failed: {invidious_err}")
 
         base_headers = {
             "User-Agent": "Mozilla/5.0 (Windows NT 10.0; Win64; x64) AppleWebKit/537.36 (KHTML, like Gecko) Chrome/120.0.0.0 Safari/537.36"
