@@ -78,9 +78,7 @@ def resolve_stream_cobalt(youtube_id: str) -> str:
     body = {
         "url": video_url,
         "downloadMode": "audio",
-        "audioFormat": "mp3",
-        "isAudioOnly": True,
-        "aFormat": "mp3"
+        "audioFormat": "mp3"
     }
     
     ssl_context = ssl._create_unverified_context()
