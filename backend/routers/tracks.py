@@ -57,6 +57,9 @@ def resolve_stream_cobalt(youtube_id: str) -> str:
                 res_data = json.loads(response.read().decode())
                 stream_url = res_data.get("url")
                 if stream_url:
+                    if "googlevideo.com" in stream_url or "youtube.com" in stream_url or "youtu.be" in stream_url:
+                        print(f"[Cobalt] Resolved URL contains direct YouTube link: {stream_url[:80]}..., discarding.")
+                        continue
                     print(f"[Cobalt] Stream resolved successfully via {instance}!")
                     return stream_url
         except Exception as e:
@@ -131,6 +134,9 @@ def resolve_stream_invidious(youtube_id: str) -> str:
                     audio_formats.sort(key=lambda x: int(x.get("bitrate", 0)), reverse=True)
                     stream_url = audio_formats[0].get("url")
                     if stream_url:
+                        if "googlevideo.com" in stream_url or "youtube.com" in stream_url or "youtu.be" in stream_url:
+                            print(f"[Invidious] Resolved URL contains direct YouTube link: {stream_url[:80]}..., discarding.")
+                            continue
                         print(f"[Invidious] Stream resolved successfully via {instance}!")
                         return stream_url
         except Exception as e:
@@ -141,49 +147,93 @@ def resolve_stream_invidious(youtube_id: str) -> str:
 @router.get("/stream/{youtube_id}")
 def get_stream_url(youtube_id: str, request: Request):
     try:
-        # Resolve the signed stream URL using yt-dlp
         url = None
+        cobalt_err = None
+        invidious_err = None
+        innertube_err = None
         yt_err = None
-        try:
-            import yt_dlp
-            ydl_opts = {
-                'format': 'bestaudio[ext=m4a]/best',
-                'quiet': True,
-                'no_warnings': True,
-            }
-            with yt_dlp.YoutubeDL(ydl_opts) as ydl:
-                info = ydl.extract_info(f"https://www.youtube.com/watch?v={youtube_id}", download=False)
-                url = info.get('url')
-        except Exception as err:
-            yt_err = err
-            print(f"yt-dlp resolution failed for {youtube_id}: {err}. Falling back to innertube.")
 
+        # 1. Try Cobalt first (tunneled and bypasses IP blocking)
+        try:
+            url = resolve_stream_cobalt(youtube_id)
+        except Exception as e:
+            cobalt_err = e
+            print(f"Cobalt resolution failed for {youtube_id}: {e}")
+
+        # 2. Try Invidious next (if Cobalt fails)
         if not url:
-            # Fetch the stream URL from YouTube Music
+            try:
+                url = resolve_stream_invidious(youtube_id)
+            except Exception as e:
+                invidious_err = e
+                print(f"Invidious resolution failed for {youtube_id}: {e}")
+
+        # 3. Try Innertube direct (fallback)
+        if not url:
             try:
                 url = innertube_service.get_stream_url(youtube_id)
-            except Exception as innertube_err:
-                try:
-                    url = resolve_stream_cobalt(youtube_id)
-                except Exception as cobalt_err:
-                    try:
-                        url = resolve_stream_invidious(youtube_id)
-                    except Exception as invidious_err:
-                        raise Exception(f"yt-dlp resolution failed: {yt_err} | innertube resolution failed: {innertube_err} | cobalt fallback failed: {cobalt_err} | invidious fallback failed: {invidious_err}")
+                print(f"[Stream] InnerTube resolved direct URL: {url[:80]}...")
+            except Exception as e:
+                innertube_err = e
+                print(f"InnerTube resolution failed for {youtube_id}: {e}")
+
+        # 4. Try yt-dlp direct (fallback)
+        if not url:
+            try:
+                import yt_dlp
+                ydl_opts = {
+                    'format': 'bestaudio[ext=m4a]/best',
+                    'quiet': True,
+                    'no_warnings': True,
+                }
+                with yt_dlp.YoutubeDL(ydl_opts) as ydl:
+                    info = ydl.extract_info(f"https://www.youtube.com/watch?v={youtube_id}", download=False)
+                    url = info.get('url')
+                print(f"[Stream] yt-dlp resolved direct URL: {url[:80]}...")
+            except Exception as e:
+                yt_err = e
+                print(f"yt-dlp resolution failed for {youtube_id}: {e}")
+
+        if not url:
+            raise Exception(f"All stream resolvers failed. Cobalt: {cobalt_err} | Invidious: {invidious_err} | InnerTube: {innertube_err} | yt-dlp: {yt_err}")
 
         base_headers = {
             "User-Agent": "Mozilla/5.0 (Windows NT 10.0; Win64; x64) AppleWebKit/537.36 (KHTML, like Gecko) Chrome/120.0.0.0 Safari/537.36"
         }
 
         # --- HEAD request to learn Content-Length & Content-Type -----------
-        with httpx.Client(timeout=15.0) as client:
-            head_resp = client.head(url, headers=base_headers, follow_redirects=True)
-
-        content_type = head_resp.headers.get("content-type", "audio/webm")
-        total_size = int(head_resp.headers.get("content-length", 0))
+        content_type = "audio/mpeg"
+        total_size = 0
+        
+        try:
+            with httpx.Client(timeout=10.0) as client:
+                head_resp = client.head(url, headers=base_headers, follow_redirects=True)
+                if head_resp.status_code < 400:
+                    content_type = head_resp.headers.get("content-type")
+                    if not content_type:
+                        # Try to sniff content-type from content-disposition
+                        disp = head_resp.headers.get("content-disposition", "")
+                        if ".mp3" in disp:
+                            content_type = "audio/mpeg"
+                        elif ".m4a" in disp:
+                            content_type = "audio/mp4"
+                        elif ".webm" in disp:
+                            content_type = "audio/webm"
+                        else:
+                            content_type = "audio/mpeg"
+                            
+                    total_size = int(head_resp.headers.get("content-length") or head_resp.headers.get("estimated-content-length") or 0)
+        except Exception as head_err:
+            print(f"[Stream] HEAD request failed for {url[:100]}... Error: {head_err}. Using fallback headers.")
 
         # --- Determine if this is a Range request ------------------------
         range_header = request.headers.get("range")
+        
+        # Bypass range requests for Cobalt/Invidious tunneled URLs since they do not support ranges
+        # and returning a range response causes mismatch between Content-Range and actual bytes.
+        is_direct = "googlevideo.com" in url or "youtube.com" in url or "youtu.be" in url
+        if not is_direct:
+            range_header = None
 
         if range_header and total_size:
             # Parse "bytes=START-END" (END is optional)
@@ -225,7 +275,7 @@ def get_stream_url(youtube_id: str, request: Request):
             try:
                 async with httpx.AsyncClient(timeout=30.0) as client:
                     async with client.stream("GET", url, headers=base_headers, follow_redirects=True) as response:
-                        print(f"[Stream] YouTube response status: {response.status_code}")
+                        print(f"[Stream] Upstream response status: {response.status_code}")
                         async for chunk in response.aiter_bytes(chunk_size=65536):
                             yield chunk
                 print("[Stream] Full stream generator finished successfully.")
@@ -235,10 +285,8 @@ def get_stream_url(youtube_id: str, request: Request):
                 traceback.print_exc()
 
         resp_headers = {
-            "Accept-Ranges": "bytes",
+            "Accept-Ranges": "none",
         }
-        # Omit Content-Length header for full streaming responses to prevent
-        # h11 LocalProtocolError when the stream length differs or is closed early.
 
         return StreamingResponse(
             stream_full(),
