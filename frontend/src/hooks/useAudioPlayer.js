@@ -1,9 +1,15 @@
 import { useState, useEffect, useRef, useCallback } from 'react';
 
-// Create a single global AudioContext to avoid initialization issues
+// Create a single global AudioContext and two audio elements for gapless player pool
 let audioCtx = null;
-let audio = null;
-let source = null;
+let audio1 = null;
+let audio2 = null;
+let activeAudio = null;
+let inactiveAudio = null;
+let source1 = null;
+let source2 = null;
+let preloadedUrl = null;
+
 let gainNode = null;
 let reverbNode = null;
 let biquadNode = null;
@@ -17,11 +23,16 @@ function initAudioGraph() {
   const AudioContextClass = window.AudioContext || window.webkitAudioContext;
   audioCtx = new AudioContextClass();
   
-  audio = new Audio();
-  audio.crossOrigin = "anonymous";
+  audio1 = new Audio();
+  audio1.crossOrigin = "anonymous";
+  
+  audio2 = new Audio();
+  audio2.crossOrigin = "anonymous";
   
   // Set up elements
-  source = audioCtx.createMediaElementSource(audio);
+  source1 = audioCtx.createMediaElementSource(audio1);
+  source2 = audioCtx.createMediaElementSource(audio2);
+  
   gainNode = audioCtx.createGain();
   reverbNode = audioCtx.createConvolver();
   biquadNode = audioCtx.createBiquadFilter();
@@ -40,18 +51,26 @@ function initAudioGraph() {
   wetGain.gain.value = 0.0;
   dryGain.gain.value = 1.0;
 
-  // Connection chain: source -> biquad
-  source.connect(biquadNode);
+  // Connection chain: both sources connect to biquad filter
+  source1.connect(biquadNode);
+  source2.connect(biquadNode);
+  
   // Dry path: biquad -> dryGain -> panner
   biquadNode.connect(dryGain);
   dryGain.connect(pannerNode);
+  
   // Wet path: biquad -> reverb -> wetGain -> panner
   biquadNode.connect(reverbNode);
   reverbNode.connect(wetGain);
   wetGain.connect(pannerNode);
+  
   // Final: panner -> gain -> destination
   pannerNode.connect(gainNode);
   gainNode.connect(audioCtx.destination);
+
+  // Default references
+  activeAudio = audio1;
+  inactiveAudio = audio2;
 }
 
 function createImpulseResponse(context, duration, decay) {
@@ -84,44 +103,65 @@ export function useAudioPlayer() {
   const animationRef = useRef(null);
   const panAngleRef = useRef(0);
 
+  // Expose activeAudio state triggers to force re-render when players swap
+  const [, forceUpdate] = useState({});
+
   useEffect(() => {
     initAudioGraph();
 
-    const handlePlay = () => setIsPlaying(true);
-    const handlePause = () => setIsPlaying(false);
-    const handleTimeUpdate = () => {
-      if (audio) setCurrentTime(audio.currentTime);
+    const handlePlay = (e) => {
+      if (e.target === activeAudio) setIsPlaying(true);
     };
-    const handleDurationChange = () => {
-      const dur = audio.duration;
-      if (dur && isFinite(dur) && dur > 0) {
-        setDuration(dur);
+    const handlePause = (e) => {
+      if (e.target === activeAudio) setIsPlaying(false);
+    };
+    const handleTimeUpdate = (e) => {
+      if (e.target === activeAudio) setCurrentTime(activeAudio.currentTime);
+    };
+    const handleDurationChange = (e) => {
+      if (e.target === activeAudio) {
+        const dur = activeAudio.duration;
+        if (dur && isFinite(dur) && dur > 0) {
+          setDuration(dur);
+        }
       }
     };
-    const handleLoadedMetadata = () => {
-      const dur = audio.duration;
-      if (dur && isFinite(dur) && dur > 0) {
-        setDuration(dur);
+    const handleLoadedMetadata = (e) => {
+      if (e.target === activeAudio) {
+        const dur = activeAudio.duration;
+        if (dur && isFinite(dur) && dur > 0) {
+          setDuration(dur);
+        }
       }
     };
     const handleError = (e) => {
-      console.error("Audio element error:", audio.error);
+      if (e.target === activeAudio) {
+        console.error("Audio element error on active track:", activeAudio.error);
+      }
     };
 
-    audio.addEventListener('play', handlePlay);
-    audio.addEventListener('pause', handlePause);
-    audio.addEventListener('timeupdate', handleTimeUpdate);
-    audio.addEventListener('durationchange', handleDurationChange);
-    audio.addEventListener('loadedmetadata', handleLoadedMetadata);
-    audio.addEventListener('error', handleError);
+    [audio1, audio2].forEach(a => {
+      if (a) {
+        a.addEventListener('play', handlePlay);
+        a.addEventListener('pause', handlePause);
+        a.addEventListener('timeupdate', handleTimeUpdate);
+        a.addEventListener('durationchange', handleDurationChange);
+        a.addEventListener('loadedmetadata', handleLoadedMetadata);
+        a.addEventListener('error', handleError);
+      }
+    });
 
     return () => {
-      audio.removeEventListener('play', handlePlay);
-      audio.removeEventListener('pause', handlePause);
-      audio.removeEventListener('timeupdate', handleTimeUpdate);
-      audio.removeEventListener('durationchange', handleDurationChange);
-      audio.removeEventListener('loadedmetadata', handleLoadedMetadata);
-      audio.removeEventListener('error', handleError);
+      [audio1, audio2].forEach(a => {
+        if (a) {
+          a.removeEventListener('play', handlePlay);
+          a.removeEventListener('pause', handlePause);
+          a.removeEventListener('timeupdate', handleTimeUpdate);
+          a.removeEventListener('durationchange', handleDurationChange);
+          a.removeEventListener('loadedmetadata', handleLoadedMetadata);
+          a.removeEventListener('error', handleError);
+        }
+      });
     };
   }, []);
 
@@ -144,36 +184,75 @@ export function useAudioPlayer() {
     };
   }, [is8D, isPlaying]);
 
+  const preloadTrack = useCallback((streamUrl) => {
+    if (!audioCtx) initAudioGraph();
+    if (streamUrl) {
+      preloadedUrl = streamUrl;
+      inactiveAudio.src = streamUrl;
+      inactiveAudio.load();
+      console.log(`[DoublePlayer] Background preloading next song: ${streamUrl}`);
+    }
+  }, []);
+
   const play = async (streamUrl) => {
     if (!audioCtx) initAudioGraph();
     if (audioCtx.state === 'suspended') {
       await audioCtx.resume();
     }
+    
     if (streamUrl) {
-      setDuration(0);
-      setCurrentTime(0);
-      audio.src = streamUrl;
-      audio.load(); // Force reload with new src
+      // Check if we hit the preloaded player
+      if (preloadedUrl && streamUrl === preloadedUrl) {
+        console.log("[DoublePlayer] Cache HIT! Swapping players for gapless playback.");
+        
+        // Pause active audio and mute/stop it
+        activeAudio.pause();
+        
+        // Swap active and inactive players
+        const temp = activeAudio;
+        activeAudio = inactiveAudio;
+        inactiveAudio = temp;
+        
+        // Reset preloaded status
+        preloadedUrl = null;
+        forceUpdate({}); // Force re-render to update audioElement bindings
+      } else {
+        console.log("[DoublePlayer] Cache MISS. Loading track on active audio.");
+        setDuration(0);
+        setCurrentTime(0);
+        activeAudio.src = streamUrl;
+        activeAudio.load();
+      }
     }
+    
     try {
-      await audio.play();
+      // Re-apply speed and pitch parameters to active audio element
+      const ratio = Math.pow(2, pitch / 12);
+      activeAudio.preservesPitch = pitch === 0;
+      activeAudio.playbackRate = speed * ratio;
+      
+      await activeAudio.play();
       setIsPlaying(true);
+      
+      // Update durations/metadata sync
+      setCurrentTime(activeAudio.currentTime);
+      if (activeAudio.duration) setDuration(activeAudio.duration);
     } catch (err) {
       console.error("Playback failed:", err);
-      throw err; // Re-throw so loadAndPlayTrack can catch it
+      throw err;
     }
   };
 
   const pause = () => {
-    if (audio) {
-      audio.pause();
+    if (activeAudio) {
+      activeAudio.pause();
       setIsPlaying(false);
     }
   };
 
   const seek = (seconds) => {
-    if (audio) {
-      audio.currentTime = seconds;
+    if (activeAudio) {
+      activeAudio.currentTime = seconds;
       setCurrentTime(seconds);
     }
   };
@@ -188,10 +267,10 @@ export function useAudioPlayer() {
 
   const setPitch = (semitones) => {
     setPitchState(semitones);
-    if (!audio) return;
+    if (!activeAudio) return;
     const ratio = Math.pow(2, semitones / 12);
-    audio.preservesPitch = false;
-    audio.playbackRate = speed * ratio;
+    activeAudio.preservesPitch = semitones === 0;
+    activeAudio.playbackRate = speed * ratio;
   };
 
   const setBassBoost = (enabled) => {
@@ -207,16 +286,18 @@ export function useAudioPlayer() {
 
   const setSpeed = (rate) => {
     setSpeedState(rate);
-    if (!audio) return;
+    if (!activeAudio) return;
     const ratio = Math.pow(2, pitch / 12);
-    audio.playbackRate = rate * ratio;
+    activeAudio.playbackRate = rate * ratio;
   };
 
   const changeVolume = (val) => {
     setVolume(val);
     if (gainNode) {
-      gainNode.gain.setValueAtTime(val, audioCtx.currentTime);
+      gainNode.gain.setValueAtTime(val, activeAudio ? activeAudio.context?.currentTime || audioCtx.currentTime : audioCtx.currentTime);
     }
+    if (audio1) audio1.volume = val;
+    if (audio2) audio2.volume = val;
   };
 
   return {
@@ -228,13 +309,14 @@ export function useAudioPlayer() {
     setBassBoost,
     set8D,
     setSpeed,
-    setVolume,
+    setVolume: changeVolume,
+    preloadTrack,
     volume,
     currentTime,
     duration,
     isPlaying,
     effects: { reverb, pitch, bassBoost, is8D, speed },
-    audioElement: audio
+    audioElement: activeAudio
   };
 }
 export default useAudioPlayer;
