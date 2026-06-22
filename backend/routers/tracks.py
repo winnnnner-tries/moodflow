@@ -18,6 +18,45 @@ def search_tracks(q: str = Query(..., description="Search query")):
         print(f"Error in search_tracks: {e}")
         raise HTTPException(status_code=500, detail=str(e))
 
+import time
+
+# In-memory stream cache
+stream_cache = {}
+
+def get_cached_url(youtube_id: str) -> str:
+    now = time.time()
+    if youtube_id in stream_cache:
+        cached = stream_cache[youtube_id]
+        if cached["expires_at"] > now:
+            print(f"[Cache] Hit for {youtube_id}! Expires in {int(cached['expires_at'] - now)}s.")
+            return cached["url"]
+        else:
+            print(f"[Cache] Expired entry removed for {youtube_id}.")
+            del stream_cache[youtube_id]
+    return None
+
+def set_cached_url(youtube_id: str, url: str, ttl: int = 1800):
+    expires_at = time.time() + ttl
+    import urllib.parse
+    try:
+        parsed = urllib.parse.urlparse(url)
+        params = urllib.parse.parse_qs(parsed.query)
+        exp_list = params.get("exp") or params.get("expire") or params.get("expire_at")
+        if exp_list:
+            exp_val = int(exp_list[0])
+            if exp_val > 10000000000: # millisecond timestamp
+                expires_at = exp_val / 1000.0 - 60
+            else: # second timestamp
+                expires_at = exp_val - 60
+            print(f"[Cache] Parsed URL expiration: {int(expires_at - time.time())}s from query param.")
+    except Exception as e:
+        print(f"[Cache] Failed to parse expiration parameter: {e}")
+        
+    stream_cache[youtube_id] = {
+        "url": url,
+        "expires_at": expires_at
+    }
+
 def resolve_stream_cobalt(youtube_id: str) -> str:
     import urllib.request
     import json
@@ -147,55 +186,63 @@ def resolve_stream_invidious(youtube_id: str) -> str:
 @router.get("/stream/{youtube_id}")
 def get_stream_url(youtube_id: str, request: Request):
     try:
-        url = None
-        cobalt_err = None
-        invidious_err = None
-        innertube_err = None
-        yt_err = None
-
-        # 1. Try Cobalt first (tunneled and bypasses IP blocking)
-        try:
-            url = resolve_stream_cobalt(youtube_id)
-        except Exception as e:
-            cobalt_err = e
-            print(f"Cobalt resolution failed for {youtube_id}: {e}")
-
-        # 2. Try Invidious next (if Cobalt fails)
+        # Check cache first
+        url = get_cached_url(youtube_id)
+        if url:
+            print(f"[Stream] Serving cached stream URL for youtube_id: {youtube_id}")
+        
         if not url:
+            cobalt_err = None
+            invidious_err = None
+            innertube_err = None
+            yt_err = None
+
+            # 1. Try Cobalt first (tunneled and bypasses IP blocking)
             try:
-                url = resolve_stream_invidious(youtube_id)
+                url = resolve_stream_cobalt(youtube_id)
             except Exception as e:
-                invidious_err = e
-                print(f"Invidious resolution failed for {youtube_id}: {e}")
+                cobalt_err = e
+                print(f"Cobalt resolution failed for {youtube_id}: {e}")
 
-        # 3. Try Innertube direct (fallback)
-        if not url:
-            try:
-                url = innertube_service.get_stream_url(youtube_id)
-                print(f"[Stream] InnerTube resolved direct URL: {url[:80]}...")
-            except Exception as e:
-                innertube_err = e
-                print(f"InnerTube resolution failed for {youtube_id}: {e}")
+            # 2. Try Invidious next (if Cobalt fails)
+            if not url:
+                try:
+                    url = resolve_stream_invidious(youtube_id)
+                except Exception as e:
+                    invidious_err = e
+                    print(f"Invidious resolution failed for {youtube_id}: {e}")
 
-        # 4. Try yt-dlp direct (fallback)
-        if not url:
-            try:
-                import yt_dlp
-                ydl_opts = {
-                    'format': 'bestaudio[ext=m4a]/best',
-                    'quiet': True,
-                    'no_warnings': True,
-                }
-                with yt_dlp.YoutubeDL(ydl_opts) as ydl:
-                    info = ydl.extract_info(f"https://www.youtube.com/watch?v={youtube_id}", download=False)
-                    url = info.get('url')
-                print(f"[Stream] yt-dlp resolved direct URL: {url[:80]}...")
-            except Exception as e:
-                yt_err = e
-                print(f"yt-dlp resolution failed for {youtube_id}: {e}")
+            # 3. Try Innertube direct (fallback)
+            if not url:
+                try:
+                    url = innertube_service.get_stream_url(youtube_id)
+                    print(f"[Stream] InnerTube resolved direct URL: {url[:80]}...")
+                except Exception as e:
+                    innertube_err = e
+                    print(f"InnerTube resolution failed for {youtube_id}: {e}")
 
-        if not url:
-            raise Exception(f"All stream resolvers failed. Cobalt: {cobalt_err} | Invidious: {invidious_err} | InnerTube: {innertube_err} | yt-dlp: {yt_err}")
+            # 4. Try yt-dlp direct (fallback)
+            if not url:
+                try:
+                    import yt_dlp
+                    ydl_opts = {
+                        'format': 'bestaudio[ext=m4a]/best',
+                        'quiet': True,
+                        'no_warnings': True,
+                    }
+                    with yt_dlp.YoutubeDL(ydl_opts) as ydl:
+                        info = ydl.extract_info(f"https://www.youtube.com/watch?v={youtube_id}", download=False)
+                        url = info.get('url')
+                    print(f"[Stream] yt-dlp resolved direct URL: {url[:80]}...")
+                except Exception as e:
+                    yt_err = e
+                    print(f"yt-dlp resolution failed for {youtube_id}: {e}")
+
+            if not url:
+                raise Exception(f"All stream resolvers failed. Cobalt: {cobalt_err} | Invidious: {invidious_err} | InnerTube: {innertube_err} | yt-dlp: {yt_err}")
+            
+            # Cache the successfully resolved URL
+            set_cached_url(youtube_id, url)
 
         base_headers = {
             "User-Agent": "Mozilla/5.0 (Windows NT 10.0; Win64; x64) AppleWebKit/537.36 (KHTML, like Gecko) Chrome/120.0.0.0 Safari/537.36"
@@ -204,34 +251,38 @@ def get_stream_url(youtube_id: str, request: Request):
         # --- HEAD request to learn Content-Length & Content-Type -----------
         content_type = "audio/mpeg"
         total_size = 0
-        
-        try:
-            with httpx.Client(timeout=10.0) as client:
-                head_resp = client.head(url, headers=base_headers, follow_redirects=True)
-                if head_resp.status_code < 400:
-                    content_type = head_resp.headers.get("content-type")
-                    if not content_type:
-                        # Try to sniff content-type from content-disposition
-                        disp = head_resp.headers.get("content-disposition", "")
-                        if ".mp3" in disp:
-                            content_type = "audio/mpeg"
-                        elif ".m4a" in disp:
-                            content_type = "audio/mp4"
-                        elif ".webm" in disp:
-                            content_type = "audio/webm"
-                        else:
-                            content_type = "audio/mpeg"
-                            
-                    total_size = int(head_resp.headers.get("content-length") or head_resp.headers.get("estimated-content-length") or 0)
-        except Exception as head_err:
-            print(f"[Stream] HEAD request failed for {url[:100]}... Error: {head_err}. Using fallback headers.")
+        is_direct = "googlevideo.com" in url or "youtube.com" in url or "youtu.be" in url
+
+        if is_direct:
+            # We only do HEAD request for direct YouTube streams to learn Content-Length & Content-Type for ranges.
+            try:
+                with httpx.Client(timeout=10.0) as client:
+                    head_resp = client.head(url, headers=base_headers, follow_redirects=True)
+                    if head_resp.status_code < 400:
+                        content_type = head_resp.headers.get("content-type")
+                        if not content_type:
+                            disp = head_resp.headers.get("content-disposition", "")
+                            if ".mp3" in disp:
+                                content_type = "audio/mpeg"
+                            elif ".m4a" in disp:
+                                content_type = "audio/mp4"
+                            elif ".webm" in disp:
+                                content_type = "audio/webm"
+                            else:
+                                content_type = "audio/mpeg"
+                        total_size = int(head_resp.headers.get("content-length") or 0)
+            except Exception as head_err:
+                print(f"[Stream] HEAD request failed for direct URL: {head_err}. Using fallback headers.")
+        else:
+            # For Cobalt/Invidious tunneled URLs, skip the HEAD request entirely to make playback start instantly!
+            # Cobalt defaults to MP3 (audio/mpeg).
+            content_type = "audio/mpeg"
 
         # --- Determine if this is a Range request ------------------------
         range_header = request.headers.get("range")
         
         # Bypass range requests for Cobalt/Invidious tunneled URLs since they do not support ranges
         # and returning a range response causes mismatch between Content-Range and actual bytes.
-        is_direct = "googlevideo.com" in url or "youtube.com" in url or "youtu.be" in url
         if not is_direct:
             range_header = None
 

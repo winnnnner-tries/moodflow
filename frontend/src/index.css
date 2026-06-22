@@ -2910,6 +2910,11 @@ body {
   animation: slideInRight 0.3s cubic-bezier(0.16, 1, 0.3, 1);
 }
 
+.global-calibration-pill.movable {
+  user-select: none;
+  -webkit-user-select: none;
+}
+
 .calibration-spinner-ring {
   width: 20px;
   height: 20px;

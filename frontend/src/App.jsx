@@ -82,16 +82,38 @@ export function App() {
   const [isCalibratingActive, setIsCalibratingActive] = useState(false);
   const isCalibratingRef = useRef(false);
   const [isAutoCalibrationMode, setIsAutoCalibrationMode] = useState(false);
+  const [isPlayerFetching, setIsPlayerFetching] = useState(false);
+
+  // Draggable Calibration Pill States & Pointer Events Handlers
+  const [pillPosition, setPillPosition] = useState({ x: 0, y: 0 });
+  const isDraggingRef = useRef(false);
+  const dragStartRef = useRef({ x: 0, y: 0 });
+
+  const handlePointerDown = (e) => {
+    if (e.button !== 0 && e.pointerType === 'mouse') return;
+    isDraggingRef.current = true;
+    dragStartRef.current = {
+      x: e.clientX - pillPosition.x,
+      y: e.clientY - pillPosition.y
+    };
+    e.currentTarget.setPointerCapture(e.pointerId);
+  };
+
+  const handlePointerMove = (e) => {
+    if (!isDraggingRef.current) return;
+    const newX = e.clientX - dragStartRef.current.x;
+    const newY = e.clientY - dragStartRef.current.y;
+    setPillPosition({ x: newX, y: newY });
+  };
+
+  const handlePointerUp = (e) => {
+    isDraggingRef.current = false;
+    e.currentTarget.releasePointerCapture(e.pointerId);
+  };
 
   // Toggle handler for auto calibration mode
   const handleToggleAutoCalibration = () => {
-    if (!isAutoCalibrationMode) {
-      // Pause playing song to prevent conflicts
-      pause();
-      setIsAutoCalibrationMode(true);
-    } else {
-      setIsAutoCalibrationMode(false);
-    }
+    setIsAutoCalibrationMode(!isAutoCalibrationMode);
   };
 
   // Play/pause sync calibration handler
@@ -209,7 +231,7 @@ export function App() {
 
   // Background Loop 3: Process calibration queue sequentially when Auto-Calibration mode is active
   useEffect(() => {
-    if (!isAutoCalibrationMode || calibrationQueue.length === 0 || isCalibratingRef.current) {
+    if (!isAutoCalibrationMode || calibrationQueue.length === 0 || isCalibratingRef.current || isPlayerFetching) {
       setIsCalibratingActive(isCalibratingRef.current);
       return;
     }
@@ -219,7 +241,7 @@ export function App() {
     const CALIBRATION_SERVICE_URL = import.meta.env.VITE_CALIBRATION_SERVICE_URL || 'http://localhost:8001';
     
     const processNext = async () => {
-      if (isCalibratingRef.current || !isAutoCalibrationMode) return;
+      if (isCalibratingRef.current || !isAutoCalibrationMode || isPlayerFetching) return;
       isCalibratingRef.current = true;
       setIsCalibratingActive(true);
 
@@ -235,7 +257,7 @@ export function App() {
           }
         }
 
-        if (youtube_id && isMounted && isAutoCalibrationMode) {
+        if (youtube_id && isMounted && isAutoCalibrationMode && !isPlayerFetching) {
           const streamUrl = `${API_BASE_URL}/stream/${youtube_id}`;
           
           const timeoutPromise = new Promise((_, reject) => 
@@ -269,7 +291,7 @@ export function App() {
         
         // Mark as failed/processed with minor offset in DB to prevent infinite retry loops
         try {
-          if (isMounted && isAutoCalibrationMode) {
+          if (isMounted && isAutoCalibrationMode && !isPlayerFetching) {
             await fetch(`${API_BASE_URL}/tracks/${track.id}`, {
               method: 'PATCH',
               headers: { 'Content-Type': 'application/json' },
@@ -306,7 +328,7 @@ export function App() {
       isCalibratingRef.current = false;
       setIsCalibratingActive(false);
     };
-  }, [calibrationQueue, isAutoCalibrationMode]);
+  }, [calibrationQueue, isAutoCalibrationMode, isPlayerFetching]);
 
   // Compute effective duration: prefer audio element duration if valid, else fallback to track metadata
   const effectiveDuration = (() => {
@@ -399,17 +421,11 @@ export function App() {
   }, [currentTrack]);
 
   const loadAndPlayTrack = async (track, index, customQueue = null) => {
-    if (isAutoCalibrationMode) {
-      setToast({
-        id: Date.now(),
-        message: "Please turn off auto-calibration mode"
-      });
-      return;
-    }
     setPlaybackError(null);
     hasLoggedProfileUpdateRef.current = false;
     
     try {
+      setIsPlayerFetching(true);
       let activeTrack = { ...track };
       const currentActiveQueue = customQueue || queue;
       
@@ -478,8 +494,10 @@ export function App() {
 
       // Reset consecutive failure counter on success
       consecutiveFailsRef.current = 0;
+      setIsPlayerFetching(false);
 
     } catch (err) {
+      setIsPlayerFetching(false);
       if (err.name === "AbortError" || err.message?.includes("interrupted by a call to pause")) {
         console.log("Play request was safely aborted/interrupted.");
         return;
@@ -503,13 +521,6 @@ export function App() {
   };
 
   const handleSelectTrack = (track, tracksList, index) => {
-    if (isAutoCalibrationMode) {
-      setToast({
-        id: Date.now(),
-        message: "Please turn off auto-calibration mode"
-      });
-      return;
-    }
     consecutiveFailsRef.current = 0; // User action resets fail counter
     
     // If we clicked a song card on feed with a feed list
@@ -536,13 +547,6 @@ export function App() {
   };
 
   const handleSelectSearchTrack = async (searchTrackItem) => {
-    if (isAutoCalibrationMode) {
-      setToast({
-        id: Date.now(),
-        message: "Please turn off auto-calibration mode"
-      });
-      return;
-    }
     consecutiveFailsRef.current = 0; // User action resets fail counter
     
     try {
@@ -571,13 +575,6 @@ export function App() {
   };
 
   const handlePlayTrackFromQueue = (index) => {
-    if (isAutoCalibrationMode) {
-      setToast({
-        id: Date.now(),
-        message: "Please turn off auto-calibration mode"
-      });
-      return;
-    }
     consecutiveFailsRef.current = 0;
     setCurrentTrackIndex(index);
     loadAndPlayTrack(queue[index], index);
@@ -585,13 +582,6 @@ export function App() {
   };
 
   const handleNext = () => {
-    if (isAutoCalibrationMode) {
-      setToast({
-        id: Date.now(),
-        message: "Please turn off auto-calibration mode"
-      });
-      return;
-    }
     if (queue.length <= 1) {
       setToast({
         id: Date.now(),
@@ -605,13 +595,6 @@ export function App() {
   };
 
   const handlePrevious = () => {
-    if (isAutoCalibrationMode) {
-      setToast({
-        id: Date.now(),
-        message: "Please turn off auto-calibration mode"
-      });
-      return;
-    }
     if (queue.length <= 1) {
       setToast({
         id: Date.now(),
@@ -1000,7 +983,17 @@ export function App() {
 
       {/* Global Calibration Progress Overlay */}
       {calibrationProgress.total > 0 && calibrationProgress.current < calibrationProgress.total && (
-        <div className="global-calibration-pill">
+        <div 
+          className="global-calibration-pill movable"
+          style={{
+            transform: `translate(${pillPosition.x}px, ${pillPosition.y}px)`,
+            cursor: isDraggingRef.current ? 'grabbing' : 'grab',
+            touchAction: 'none'
+          }}
+          onPointerDown={handlePointerDown}
+          onPointerMove={handlePointerMove}
+          onPointerUp={handlePointerUp}
+        >
           <div className="calibration-spinner-ring"></div>
           <div className="calibration-info">
             <span className="calibration-title">Calibrating Audio Analysis...</span>
