@@ -1,4 +1,4 @@
-import React, { useState, useEffect, useRef } from 'react';
+import React, { useState, useEffect, useRef, useCallback } from 'react';
 import FeedScreen from './components/FeedScreen';
 import PlayerScreen from './components/PlayerScreen';
 import AudioEffects from './components/AudioEffects';
