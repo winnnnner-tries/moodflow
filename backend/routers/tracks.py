@@ -186,7 +186,7 @@ def resolve_stream_invidious(youtube_id: str) -> str:
     raise Exception("All Invidious instances failed to resolve stream")
 
 @router.get("/stream/{youtube_id}")
-def get_stream_url(youtube_id: str, request: Request):
+async def get_stream_url(youtube_id: str, request: Request):
     try:
         # Check cache first
         url = get_cached_url(youtube_id)
