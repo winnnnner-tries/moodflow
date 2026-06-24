@@ -1,6 +1,33 @@
 import time
+from threading import Lock
 from services.supabase_client import supabase, execute_with_retry
 from services.innertube import innertube_service
+
+# In-memory cache for live YouTube Music tracks lookup
+# Structure: { (lang, closest_preset): { "tracks": [...], "expires_at": float } }
+_yt_cache = {}
+_yt_cache_lock = Lock()
+
+def get_cached_yt_tracks(lang: str, preset: str) -> list | None:
+    now = time.time()
+    key = (lang, preset)
+    with _yt_cache_lock:
+        entry = _yt_cache.get(key)
+        if entry and entry["expires_at"] > now:
+            return entry["tracks"]
+        if entry:
+            del _yt_cache[key]
+    return None
+
+def set_cached_yt_tracks(lang: str, preset: str, tracks: list, ttl: float = 600.0):
+    now = time.time()
+    key = (lang, preset)
+    with _yt_cache_lock:
+        _yt_cache[key] = {
+            "tracks": tracks,
+            "expires_at": now + ttl
+        }
+
 
 LANG_NAMES = {
     "en": "English",
@@ -12,6 +39,40 @@ LANG_NAMES = {
     "bn": "Bengali",
     "ko": "Korean"
 }
+
+LANG_EXCLUSION_TERMS = {
+    "english": ["english"],
+    "hindi": ["hindi", "bollywood", "punjabi", "bhojpuri", "haryanvi", "marathi", "gujarati", "urdu", "rajasthani"],
+    "tamil": ["tamil", "kollywood"],
+    "telugu": ["telugu", "telegu", "telgu", "tollywood", "andhra", "telangana"],
+    "malayalam": ["malayalam", "mollywood", "kerala", "mallu"],
+    "kannada": ["kannada", "sandalwood", "karnataka"],
+    "bengali": ["bengali", "bangla"],
+    "korean": ["korean", "kpop", "k-pop"]
+}
+
+LANG_CODE_TO_KEY = {
+    "en": "english",
+    "hi": "hindi",
+    "ta": "tamil",
+    "te": "telugu",
+    "ml": "malayalam",
+    "kn": "kannada",
+    "bn": "bengali",
+    "ko": "korean"
+}
+
+def get_mismatch_terms(lang: str) -> list[str]:
+    if not lang:
+        return []
+    target_key = LANG_CODE_TO_KEY.get(lang.lower().strip())
+    if not target_key:
+        return []
+    mismatch_terms = []
+    for key, terms in LANG_EXCLUSION_TERMS.items():
+        if key != target_key:
+            mismatch_terms.extend(terms)
+    return mismatch_terms
 
 PRESETS = {
     "workout": {"energy": 0.85, "danceability": 0.75, "valence": 0.65, "tempo": 0.56, "acousticness": 0.05, "instrumentalness": 0.1, "loudness": 0.88},
@@ -142,46 +203,74 @@ def get_hybrid_feed(
     closest_preset = preset_key if preset_key and preset_key in PRESETS else get_closest_preset_name(targets)
     mood_query = PRESET_QUERIES.get(closest_preset, "Chill")
     
-    yt_tracks = []
-    
-    # 1. Try to fetch from a Mood-specific Playlist on YouTube Music
-    try:
-        # E.g. "Tamil Workout" or "Hindi Chill" or "English Hype"
-        query = f"{lang_name} {mood_query}"
-        print(f"[Dynamic Feed] Searching YTM playlists for mood: '{query}'")
-        results = innertube_service.yt.search(query, filter="playlists")
+    # Check cache first
+    cached_tracks = get_cached_yt_tracks(lang, closest_preset)
+    if cached_tracks is not None:
+        print(f"[Dynamic Feed Cache] Hit for YTM tracks: ({lang}, {closest_preset}). Fetched {len(cached_tracks)} tracks.")
+        yt_tracks = cached_tracks
+    else:
+        yt_tracks = []
         
-        # Fallback to Hotlist or general Hits if mood search returned nothing
-        if not results:
-            fallback_query = f"{lang_name} Hotlist"
-            print(f"[Dynamic Feed] Mood query '{query}' empty. Falling back to: '{fallback_query}'")
-            results = innertube_service.yt.search(fallback_query, filter="playlists")
-            
-        if not results:
-            fallback_query = f"{lang_name} Hits"
-            print(f"[Dynamic Feed] Hotlist empty. Falling back to: '{fallback_query}'")
-            results = innertube_service.yt.search(fallback_query, filter="playlists")
-            
-        if results:
-            playlist = results[0]
-            playlist_id = playlist.get("browseId") or playlist.get("playlistId")
-            playlist_res = innertube_service.get_playlist_tracks(playlist_id, limit=40)
-            yt_tracks = playlist_res.get("tracks", [])
-            safe_title = playlist.get('title', 'Unknown Title').encode('ascii', 'ignore').decode('ascii')
-            print(f"[Dynamic Feed] Fetched {len(yt_tracks)} tracks from live playlist '{safe_title}'")
-    except Exception as e:
-        print(f"[Dynamic Feed] Error fetching mood playlists for {lang_name}: {e}")
-        
-    # 2. Fallback: Search songs directly if playlist failed or returned empty
-    if not yt_tracks:
+        # 1. Try to fetch from a Mood-specific Playlist on YouTube Music
         try:
-            fallback_search = f"{lang_name} {mood_query} Songs"
-            print(f"[Dynamic Feed] Playlist fallback empty. Searching songs directly for: '{fallback_search}'")
-            yt_tracks = innertube_service.search_tracks_list(fallback_search, limit=30)
-            for t in yt_tracks:
-                t["language"] = lang
+            # E.g. "Tamil Workout" or "Hindi Chill" or "English Hype"
+            query = f"{lang_name} {mood_query}"
+            print(f"[Dynamic Feed] Searching YTM playlists for mood: '{query}'")
+            results = innertube_service.yt.search(query, filter="playlists")
+            
+            # Fallback to Hotlist or general Hits if mood search returned nothing
+            if not results:
+                fallback_query = f"{lang_name} Hotlist"
+                print(f"[Dynamic Feed] Mood query '{query}' empty. Falling back to: '{fallback_query}'")
+                results = innertube_service.yt.search(fallback_query, filter="playlists")
+                
+            if not results:
+                fallback_query = f"{lang_name} Hits"
+                print(f"[Dynamic Feed] Hotlist empty. Falling back to: '{fallback_query}'")
+                results = innertube_service.yt.search(fallback_query, filter="playlists")
+                
+            if results:
+                mismatch_terms = get_mismatch_terms(lang)
+                chosen_playlist = None
+                for p in results:
+                    title = p.get("title", "Curated Playlist")
+                    title_lower = title.lower()
+                    
+                    has_mismatch = False
+                    for term in mismatch_terms:
+                        if term in title_lower:
+                            has_mismatch = True
+                            break
+                    if not has_mismatch:
+                        chosen_playlist = p
+                        break
+                    else:
+                        safe_skipped_title = title.encode('ascii', 'ignore').decode('ascii')
+                        print(f"[Dynamic Feed] Skipping playlist '{safe_skipped_title}' due to language mismatch for lang '{lang}'")
+                
+                if chosen_playlist:
+                    playlist_id = chosen_playlist.get("browseId") or chosen_playlist.get("playlistId")
+                    playlist_res = innertube_service.get_playlist_tracks(playlist_id, limit=40)
+                    yt_tracks = playlist_res.get("tracks", [])
+                    safe_title = chosen_playlist.get('title', 'Unknown Title').encode('ascii', 'ignore').decode('ascii')
+                    print(f"[Dynamic Feed] Fetched {len(yt_tracks)} tracks from live playlist '{safe_title}'")
         except Exception as e:
-            print(f"[Dynamic Feed] Error searching songs directly: {e}")
+            print(f"[Dynamic Feed] Error fetching mood playlists for {lang_name}: {e}")
+            
+        # 2. Fallback: Search songs directly if playlist failed or returned empty
+        if not yt_tracks:
+            try:
+                fallback_search = f"{lang_name} {mood_query} Songs"
+                print(f"[Dynamic Feed] Playlist fallback empty. Searching songs directly for: '{fallback_search}'")
+                yt_tracks = innertube_service.search_tracks_list(fallback_search, limit=30)
+                for t in yt_tracks:
+                    t["language"] = lang
+            except Exception as e:
+                print(f"[Dynamic Feed] Error searching songs directly: {e}")
+        
+        # Cache results if we found tracks
+        if yt_tracks:
+            set_cached_yt_tracks(lang, closest_preset, yt_tracks, ttl=600.0)
 
     # 3. Fetch already calibrated tracks in that language from Supabase DB to mix in
     db_calibrated = []

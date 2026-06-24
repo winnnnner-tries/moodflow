@@ -36,6 +36,8 @@ CREATE INDEX IF NOT EXISTS idx_tracks_params ON tracks (energy, danceability, va
 CREATE UNIQUE INDEX IF NOT EXISTS idx_tracks_identity ON tracks (track_name, artist);
 CREATE INDEX IF NOT EXISTS idx_tracks_lang_popularity ON tracks (language, popularity DESC);
 CREATE INDEX IF NOT EXISTS idx_tracks_source ON tracks (source);
+CREATE INDEX IF NOT EXISTS idx_tracks_lang_created_at ON tracks (language, created_at DESC);
+CREATE INDEX IF NOT EXISTS idx_tracks_lang_source ON tracks (language, source);
 
 -- 2. Create User Profiles Table
 CREATE TABLE IF NOT EXISTS user_profiles (

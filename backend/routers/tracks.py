@@ -57,11 +57,7 @@ def set_cached_url(youtube_id: str, url: str, ttl: int = 1800):
         "expires_at": expires_at
     }
 
-def resolve_stream_cobalt(youtube_id: str) -> str:
-    import urllib.request
-    import json
-    import ssl
-    
+async def resolve_stream_cobalt(youtube_id: str) -> str:
     cobalt_instances = [
         "https://rue-cobalt.xenon.zone",
         "https://api.cobalt.blackcat.sweeux.org"
@@ -81,57 +77,45 @@ def resolve_stream_cobalt(youtube_id: str) -> str:
         "audioFormat": "mp3"
     }
     
-    ssl_context = ssl._create_unverified_context()
-    
-    for instance in cobalt_instances:
-        try:
-            print(f"[Cobalt] Attempting to resolve stream for {youtube_id} via {instance}...")
-            req = urllib.request.Request(
-                instance, 
-                data=json.dumps(body).encode('utf-8'), 
-                headers=headers,
-                method="POST"
-            )
-            with urllib.request.urlopen(req, context=ssl_context, timeout=4) as response:
-                res_data = json.loads(response.read().decode())
-                stream_url = res_data.get("url")
-                if stream_url:
-                    if "googlevideo.com" in stream_url or "youtube.com" in stream_url or "youtu.be" in stream_url:
-                        print(f"[Cobalt] Resolved URL contains direct YouTube link: {stream_url[:80]}..., discarding.")
-                        continue
-                    print(f"[Cobalt] Stream resolved successfully via {instance}!")
-                    return stream_url
-        except Exception as e:
-            print(f"[Cobalt] Failed to resolve via {instance}: {e}")
-            
+    async with httpx.AsyncClient(timeout=4.0, verify=False) as client:
+        for instance in cobalt_instances:
+            try:
+                print(f"[Cobalt] Attempting to resolve stream for {youtube_id} via {instance}...")
+                resp = await client.post(instance, json=body, headers=headers)
+                if resp.status_code == 200:
+                    res_data = resp.json()
+                    stream_url = res_data.get("url")
+                    if stream_url:
+                        if "googlevideo.com" in stream_url or "youtube.com" in stream_url or "youtu.be" in stream_url:
+                            print(f"[Cobalt] Resolved URL contains direct YouTube link: {stream_url[:80]}..., discarding.")
+                            continue
+                        print(f"[Cobalt] Stream resolved successfully via {instance}!")
+                        return stream_url
+            except Exception as e:
+                print(f"[Cobalt] Failed to resolve via {instance}: {e}")
+                
     raise Exception("All Cobalt instances failed to resolve stream")
 
 cached_invidious_instances = []
 
-def resolve_stream_invidious(youtube_id: str) -> str:
+async def fetch_invidious_instances(client: httpx.AsyncClient):
     global cached_invidious_instances
-    import urllib.request
-    import json
-    import ssl
-    
-    # Try fetching instances list if cache is empty
     if not cached_invidious_instances:
         try:
             print("[Invidious] Fetching public instances list...")
-            ssl_context = ssl._create_unverified_context()
-            req = urllib.request.Request("https://api.invidious.io/instances.json", headers={"User-Agent": "Mozilla/5.0"})
-            with urllib.request.urlopen(req, context=ssl_context, timeout=5) as response:
-                instances_data = json.loads(response.read().decode())
-                # Extract URIs of healthy instances
+            resp = await client.get("https://api.invidious.io/instances.json", headers={"User-Agent": "Mozilla/5.0"}, timeout=5.0)
+            if resp.status_code == 200:
+                instances_data = resp.json()
                 for item in instances_data:
                     uri = item[1].get("uri")
-                    # filter type = "https" and has uri
                     if uri and item[1].get("type") == "https":
                         cached_invidious_instances.append(uri)
         except Exception as e:
             print(f"[Invidious] Failed to fetch instances list: {e}")
-            
-    # Fallback to hardcoded list if fetching failed
+
+async def resolve_stream_invidious(youtube_id: str) -> str:
+    global cached_invidious_instances
+    
     fallback_list = [
         "https://inv.thepixora.com",
         "https://invidious.tiekoetter.com",
@@ -147,40 +131,40 @@ def resolve_stream_invidious(youtube_id: str) -> str:
         "https://inv.thepixora.com"
     ]
     
-    search_list = cached_invidious_instances if cached_invidious_instances else fallback_list
+    headers = {"User-Agent": "Mozilla/5.0"}
     
-    # Prioritize working instances and remove duplicates/Tor/I2P domains
-    clean_list = []
-    for inst in primary_instances + search_list + fallback_list:
-        if inst and inst not in clean_list:
-            if not any(x in inst for x in [".onion", ".i2p", ".ygg"]):
-                clean_list.append(inst)
-    
-    # Try up to 12 instances to resolve the stream
-    for idx, instance in enumerate(clean_list[:12]):
-        try:
-            print(f"[Invidious] Attempting to resolve stream for {youtube_id} via {instance}...")
-            url = f"{instance}/api/v1/videos/{youtube_id}"
-            req = urllib.request.Request(url, headers={"User-Agent": "Mozilla/5.0"})
-            ssl_context = ssl._create_unverified_context()
-            with urllib.request.urlopen(req, context=ssl_context, timeout=5) as response:
-                data = json.loads(response.read().decode())
-                formats = data.get("adaptiveFormats", [])
-                # Extract audio-only formats
-                audio_formats = [f for f in formats if f.get("type", "").startswith("audio/")]
-                if audio_formats:
-                    # Sort to get highest quality / mp4 if preferred
-                    audio_formats.sort(key=lambda x: int(x.get("bitrate", 0)), reverse=True)
-                    stream_url = audio_formats[0].get("url")
-                    if stream_url:
-                        if "googlevideo.com" in stream_url or "youtube.com" in stream_url or "youtu.be" in stream_url:
-                            print(f"[Invidious] Resolved URL contains direct YouTube link: {stream_url[:80]}..., discarding.")
-                            continue
-                        print(f"[Invidious] Stream resolved successfully via {instance}!")
-                        return stream_url
-        except Exception as e:
-            print(f"[Invidious] Failed to resolve via {instance}: {e}")
-            
+    async with httpx.AsyncClient(timeout=5.0, verify=False) as client:
+        await fetch_invidious_instances(client)
+        
+        search_list = cached_invidious_instances if cached_invidious_instances else fallback_list
+        
+        clean_list = []
+        for inst in primary_instances + search_list + fallback_list:
+            if inst and inst not in clean_list:
+                if not any(x in inst for x in [".onion", ".i2p", ".ygg"]):
+                    clean_list.append(inst)
+        
+        for idx, instance in enumerate(clean_list[:12]):
+            try:
+                print(f"[Invidious] Attempting to resolve stream for {youtube_id} via {instance}...")
+                url = f"{instance}/api/v1/videos/{youtube_id}"
+                resp = await client.get(url, headers=headers)
+                if resp.status_code == 200:
+                    data = resp.json()
+                    formats = data.get("adaptiveFormats", [])
+                    audio_formats = [f for f in formats if f.get("type", "").startswith("audio/")]
+                    if audio_formats:
+                        audio_formats.sort(key=lambda x: int(x.get("bitrate", 0)), reverse=True)
+                        stream_url = audio_formats[0].get("url")
+                        if stream_url:
+                            if "googlevideo.com" in stream_url or "youtube.com" in stream_url or "youtu.be" in stream_url:
+                                print(f"[Invidious] Resolved URL contains direct YouTube link: {stream_url[:80]}..., discarding.")
+                                continue
+                            print(f"[Invidious] Stream resolved successfully via {instance}!")
+                            return stream_url
+            except Exception as e:
+                print(f"[Invidious] Failed to resolve via {instance}: {e}")
+                
     raise Exception("All Invidious instances failed to resolve stream")
 
 @router.get("/stream/{youtube_id}")
@@ -199,7 +183,7 @@ async def get_stream_url(youtube_id: str, request: Request):
 
             # 1. Try Cobalt first (tunneled and bypasses IP blocking)
             try:
-                url = resolve_stream_cobalt(youtube_id)
+                url = await resolve_stream_cobalt(youtube_id)
             except Exception as e:
                 cobalt_err = e
                 print(f"Cobalt resolution failed for {youtube_id}: {e}")
@@ -207,7 +191,7 @@ async def get_stream_url(youtube_id: str, request: Request):
             # 2. Try Invidious next (if Cobalt fails)
             if not url:
                 try:
-                    url = resolve_stream_invidious(youtube_id)
+                    url = await resolve_stream_invidious(youtube_id)
                 except Exception as e:
                     invidious_err = e
                     print(f"Invidious resolution failed for {youtube_id}: {e}")
@@ -256,8 +240,8 @@ async def get_stream_url(youtube_id: str, request: Request):
         if is_direct:
             # We only do HEAD request for direct YouTube streams to learn Content-Length & Content-Type for ranges.
             try:
-                with httpx.Client(timeout=10.0) as client:
-                    head_resp = client.head(url, headers=base_headers, follow_redirects=True)
+                async with httpx.AsyncClient(timeout=10.0) as client:
+                    head_resp = await client.head(url, headers=base_headers, follow_redirects=True)
                     if head_resp.status_code < 400:
                         content_type = head_resp.headers.get("content-type")
                         if not content_type:
@@ -379,6 +363,11 @@ def create_track(
     explicit: bool = Body(False, embed=True)
 ):
     try:
+        # Auto-classify language if it is English or default
+        if language == "en":
+            from services.clean_language_bulk import classify_track
+            language = classify_track(track_name, artist, album, language)
+
         # Check uniqueness constraint
         exist_check = execute_with_retry(
             supabase.table("tracks")
@@ -421,7 +410,7 @@ def update_track_parameters(id: str, params: dict = Body(...)):
         allowed_keys = [
             "energy", "danceability", "valence", "tempo", 
             "acousticness", "instrumentalness", "speechiness", 
-            "liveness", "loudness", "popularity"
+            "liveness", "loudness", "popularity", "language"
         ]
         
         update_data = {k: v for k, v in normalized_params.items() if k in allowed_keys}

@@ -203,13 +203,22 @@ def get_featured_playlists(
     lang: str = Query("en", description="Language preference code"),
     preset: str = Query("chill", description="Current mood preset")
 ):
-    from services.dynamic_feed import LANG_NAMES, PRESET_QUERIES
+    from services.dynamic_feed import LANG_NAMES, PRESET_QUERIES, get_mismatch_terms
     try:
+        lang = lang.lower().strip()
         lang_name = LANG_NAMES.get(lang, "English")
-        mood_label = PRESET_QUERIES.get(preset, preset.replace("_", " ").title())
+        
+        # Override preset query mapping for special presets
+        preset_clean = preset.lower().strip()
+        if preset_clean == "for_you":
+            mood_label = "Hits"
+        elif preset_clean == "custom":
+            mood_label = "Playlist"
+        else:
+            mood_label = PRESET_QUERIES.get(preset, preset.replace("_", " ").title())
         
         # Base query on language + mood to ensure relevant playlists
-        if preset in ["workout", "hype", "feel_good"]:
+        if preset_clean in ["workout", "hype", "feel_good"]:
             query = f"{lang_name} {mood_label} 2024"
         else:
             query = f"{lang_name} {mood_label}"
@@ -217,23 +226,42 @@ def get_featured_playlists(
         # Search for playlists in YT Music
         results = innertube_service.yt.search(query, filter="playlists")
         
+        mismatch_terms = get_mismatch_terms(lang)
+        
         featured = []
-        for p in results[:5]:
+        for p in results:
             playlist_id = p.get("browseId") or p.get("playlistId")
             if not playlist_id:
                 continue
             
+            title = p.get("title", "Curated Playlist")
+            title_lower = title.lower()
+            
+            # Filter out mismatching language playlists
+            has_mismatch = False
+            for term in mismatch_terms:
+                if term in title_lower:
+                    has_mismatch = True
+                    break
+            if has_mismatch:
+                print(f"[Featured Sync] Skipping playlist '{title}' due to language mismatch for lang '{lang}'")
+                continue
+                
             thumbnails = p.get("thumbnails", [])
             thumbnail_url = thumbnails[-1].get("url") if thumbnails else None
             
             featured.append({
                 "id": playlist_id,
-                "title": p.get("title", "Curated Playlist"),
+                "title": title,
                 "description": p.get("description", f"Curated {lang_name} hits and popular songs."),
                 "thumbnail_url": thumbnail_url,
                 "gradient": "linear-gradient(135deg, #6366f1 0%, #a855f7 100%)",
                 "icon": "🎶"
             })
+            
+            if len(featured) >= 5:
+                break
+                
         return featured
     except Exception as e:
         print(f"Error fetching featured playlists: {e}")

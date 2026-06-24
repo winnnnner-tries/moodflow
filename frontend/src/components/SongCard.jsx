@@ -1,8 +1,20 @@
 import React, { useState, useEffect, useRef } from 'react';
 
-export function SongCard({ track, onClick, onPlayNext, onAddToQueue, onHover }) {
+const LANGUAGES = [
+  { code: 'en', name: 'English' },
+  { code: 'hi', name: 'Hindi' },
+  { code: 'ta', name: 'Tamil' },
+  { code: 'te', name: 'Telugu' },
+  { code: 'ml', name: 'Malayalam' },
+  { code: 'kn', name: 'Kannada' },
+  { code: 'bn', name: 'Bengali' },
+  { code: 'ko', name: 'Korean' }
+];
+
+export function SongCard({ track, onClick, onPlayNext, onAddToQueue, onHover, onChangeLanguage }) {
   const { youtube_id, track_name, artist, thumbnail_url } = track;
   const [showMenu, setShowMenu] = useState(false);
+  const [showLangSubmenu, setShowLangSubmenu] = useState(false);
   const menuRef = useRef(null);
   const hoverTimerRef = useRef(null);
   
@@ -10,10 +22,14 @@ export function SongCard({ track, onClick, onPlayNext, onAddToQueue, onHover }) 
   const imgUrl = thumbnail_url || (youtube_id ? `https://i.ytimg.com/vi/${youtube_id}/mqdefault.jpg` : '');
 
   useEffect(() => {
-    if (!showMenu) return;
+    if (!showMenu) {
+      setShowLangSubmenu(false);
+      return;
+    }
     const handleClickOutside = (event) => {
       if (menuRef.current && !menuRef.current.contains(event.target)) {
         setShowMenu(false);
+        setShowLangSubmenu(false);
       }
     };
     document.addEventListener('mousedown', handleClickOutside);
@@ -97,6 +113,37 @@ export function SongCard({ track, onClick, onPlayNext, onAddToQueue, onHover }) 
             >
               Add to queue
             </button>
+            <div className="song-card-submenu-trigger-wrapper">
+              <button 
+                className="song-card-menu-item submenu-trigger"
+                onClick={(e) => {
+                  e.stopPropagation();
+                  setShowLangSubmenu(!showLangSubmenu);
+                }}
+                type="button"
+              >
+                Correct language ➔
+              </button>
+              {showLangSubmenu && (
+                <div className="song-card-submenu-dropdown">
+                  {LANGUAGES.map((lang) => (
+                    <button
+                      key={lang.code}
+                      className={`song-card-menu-item ${track.language === lang.code ? 'active' : ''}`}
+                      onClick={(e) => {
+                        e.stopPropagation();
+                        setShowMenu(false);
+                        setShowLangSubmenu(false);
+                        if (onChangeLanguage) onChangeLanguage(track.id, lang.code);
+                      }}
+                      type="button"
+                    >
+                      {lang.name}
+                    </button>
+                  ))}
+                </div>
+              )}
+            </div>
           </div>
         )}
       </div>

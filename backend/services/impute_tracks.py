@@ -88,11 +88,7 @@ def resolve_dummy_tracks(batch_size=50):
     # To be efficient, we scan only for tracks matching the dummy signature
     try:
         res = supabase.table('tracks').select('*')\
-            .eq('energy', 0.5)\
-            .eq('danceability', 0.5)\
-            .eq('valence', 0.5)\
-            .eq('tempo', 0.5)\
-            .eq('acousticness', 0.5)\
+            .or_('energy.is.null,energy.eq.0.5,energy.eq.0.5001')\
             .execute()
         dummy_tracks = res.data if res.data else []
     except Exception as e:

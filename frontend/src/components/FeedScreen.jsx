@@ -37,6 +37,8 @@ export function FeedScreen({
   onAddToQueue,
   isAutoCalibrationMode,
   onToggleAutoCalibration,
+  onResetFailedCalib,
+  onResetImputed,
   onHoverTrack
 }) {
   const [selectedLanguage, setSelectedLanguage] = useState(localStorage.getItem("moodflow_user_lang") || 'en');
@@ -81,6 +83,7 @@ export function FeedScreen({
 
   // Greeting
   const greeting = useMemo(() => getGreeting(), []);
+  const abortControllerRef = useRef(null);
 
   const fetchFeaturedPlaylists = async (lang, currentPreset) => {
     try {
@@ -217,7 +220,7 @@ export function FeedScreen({
 
 
   // Fetch feed — try /feed/sections first, fall back to /feed
-  const fetchFeed = async (langCode, moodParams) => {
+  const fetchFeed = async (langCode, moodParams, signal) => {
     setLoadingFeed(true);
     setFeedError(null);
     try {
@@ -237,7 +240,7 @@ export function FeedScreen({
       });
 
       try {
-        const sectionsResponse = await fetch(`${API_BASE_URL}/feed/sections?${sectionsParams.toString()}`);
+        const sectionsResponse = await fetch(`${API_BASE_URL}/feed/sections?${sectionsParams.toString()}`, { signal });
         if (sectionsResponse.ok) {
           const sectionsData = await sectionsResponse.json();
           const sectionsArray = sectionsData.sections || [];
@@ -250,6 +253,10 @@ export function FeedScreen({
           }
         }
       } catch (sectionsErr) {
+        if (sectionsErr.name === 'AbortError') {
+          console.log("[Feed Fetch] Sections fetch aborted.");
+          return;
+        }
         console.warn("Sections endpoint unavailable, falling back to /feed:", sectionsErr);
       }
 
@@ -266,7 +273,7 @@ export function FeedScreen({
         user_id: userId
       });
 
-      const response = await fetch(`${API_BASE_URL}/feed?${queryParams.toString()}`);
+      const response = await fetch(`${API_BASE_URL}/feed?${queryParams.toString()}`, { signal });
       if (!response.ok) {
         throw new Error("Failed to load feed tracks from database.");
       }
@@ -274,9 +281,15 @@ export function FeedScreen({
       setTracks(data || []);
       setFeedSections([]);
     } catch (err) {
+      if (err.name === 'AbortError') {
+        console.log("[Feed Fetch] Feed fetch aborted.");
+        return;
+      }
       setFeedError(err.message);
     } finally {
-      setLoadingFeed(false);
+      if (!signal || !signal.aborted) {
+        setLoadingFeed(false);
+      }
     }
   };
 
@@ -321,10 +334,7 @@ export function FeedScreen({
 
   // Trigger feed reload when language or parameters change
   useEffect(() => {
-    fetchFeed(selectedLanguage, params);
-    fetchFeaturedPlaylists(selectedLanguage, activePreset);
-    
-    // Dynamically adjust ambient backdrop mesh gradients on preset/parameter changes
+    // 1. Update ambient backdrop colors instantly (synchronous)
     if (params) {
       const energy = params.energy ?? 0.5;
       const valence = params.valence ?? 0.5;
@@ -340,6 +350,25 @@ export function FeedScreen({
       document.documentElement.style.setProperty('--mood-color-1', `${r1}, ${g1}, ${b1}`);
       document.documentElement.style.setProperty('--mood-color-2', `${r2}, ${g2}, ${b2}`);
     }
+
+    // Abort any active in-flight request
+    if (abortControllerRef.current) {
+      abortControllerRef.current.abort();
+    }
+    // Create new abort controller
+    const controller = new AbortController();
+    abortControllerRef.current = controller;
+
+    // 2. Debounce API requests by 350ms to prevent network/DB spamming during slider drags
+    const timer = setTimeout(() => {
+      fetchFeed(selectedLanguage, params, controller.signal);
+      fetchFeaturedPlaylists(selectedLanguage, activePreset);
+    }, 350);
+
+    return () => {
+      clearTimeout(timer);
+      controller.abort();
+    };
   }, [selectedLanguage, params, discovery]);
 
   const handleSelectPreset = (presetKey, presetParams) => {
@@ -410,6 +439,32 @@ export function FeedScreen({
     }
   };
 
+  const handleChangeLanguage = async (trackId, newLangCode) => {
+    try {
+      const response = await fetch(`${API_BASE_URL}/tracks/${trackId}`, {
+        method: 'PATCH',
+        headers: { 'Content-Type': 'application/json' },
+        body: JSON.stringify({ language: newLangCode })
+      });
+      if (response.ok) {
+        // Successfully updated track language in database!
+        // Immediately remove this track from local active states to filter it out dynamically
+        setTracks(prev => prev.filter(t => t.id !== trackId));
+        setFeedSections(prevSections => 
+          prevSections.map(section => ({
+            ...section,
+            tracks: (section.tracks || []).filter(t => t.id !== trackId)
+          })).filter(section => (section.tracks || []).length > 0)
+        );
+        console.log(`Successfully updated language of track ${trackId} to ${newLangCode}`);
+      } else {
+        console.error("Failed to update language on server.");
+      }
+    } catch (err) {
+      console.error("Error updating track language:", err);
+    }
+  };
+
   // Render a horizontal scroll section
   const renderHorizontalSection = (section) => {
     const sectionTracks = section.tracks || [];
@@ -432,6 +487,7 @@ export function FeedScreen({
                   onPlayNext={onPlayNext}
                   onAddToQueue={onAddToQueue}
                   onHover={onHoverTrack}
+                  onChangeLanguage={handleChangeLanguage}
                 />
               </div>
             );
@@ -461,6 +517,7 @@ export function FeedScreen({
               onPlayNext={onPlayNext}
               onAddToQueue={onAddToQueue}
               onHover={onHoverTrack}
+              onChangeLanguage={handleChangeLanguage}
             />
           ))}
         </div>
@@ -508,6 +565,22 @@ export function FeedScreen({
             title={isAutoCalibrationMode ? "Turn OFF Auto-Calibration" : "Turn ON Auto-Calibration"}
           >
             ⚙️ {isAutoCalibrationMode ? 'Auto-Calib: ON' : 'Auto-Calib: OFF'}
+          </button>
+
+          <button 
+            className="header-control-action-btn"
+            onClick={onResetFailedCalib}
+            title="Reset failed calibrations (0.5001) to 0.5 to retry them"
+          >
+            🔄 Retry Failed
+          </button>
+          
+          <button 
+            className="header-control-action-btn"
+            onClick={onResetImputed}
+            title="Reset all non-Kaggle/sync tracks to 0.5 to force clean recalibration"
+          >
+            🧹 Recalibrate All
           </button>
           
           <div className="current-lang-badge" onClick={() => setShowOnboarding(true)}>
@@ -704,7 +777,12 @@ export function FeedScreen({
           <span className="section-title">Parametric Feed</span>
           <button 
             className="refresh-feed-btn"
-            onClick={() => fetchFeed(selectedLanguage, params)}
+            onClick={() => {
+              if (abortControllerRef.current) abortControllerRef.current.abort();
+              const controller = new AbortController();
+              abortControllerRef.current = controller;
+              fetchFeed(selectedLanguage, params, controller.signal);
+            }}
             disabled={loadingFeed}
             aria-label="Refresh Feed"
           >
@@ -854,6 +932,7 @@ export function FeedScreen({
                       onPlayNext={onPlayNext}
                       onAddToQueue={onAddToQueue}
                       onHover={onHoverTrack}
+                      onChangeLanguage={handleChangeLanguage}
                     />
                   ))}
                 </div>

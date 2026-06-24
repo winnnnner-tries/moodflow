@@ -120,6 +120,74 @@ export function App() {
     setIsAutoCalibrationMode(!isAutoCalibrationMode);
   };
 
+  const handleResetFailedCalibrations = async () => {
+    try {
+      console.log("[Calibration] Resetting failed tracks (0.5001) back to 0.5/defaults for retry...");
+      const { error } = await supabase
+        .from('tracks')
+        .update({
+          energy: 0.5,
+          danceability: 0.5,
+          valence: 0.5,
+          tempo: 0.5,
+          acousticness: 0.5,
+          instrumentalness: 0.1,
+          speechiness: 0.1,
+          liveness: 0.1,
+          loudness: 0.7
+        })
+        .or('energy.eq.0.5001,danceability.eq.0.5001,tempo.eq.0.5001,valence.eq.0.5001,acousticness.eq.0.5001');
+      
+      if (error) throw error;
+      
+      setToast({
+        id: Date.now(),
+        message: "Failed calibrations successfully reset! Turn Auto-Calib on to retry."
+      });
+      
+      if (isAutoCalibrationMode) {
+        setIsAutoCalibrationMode(false);
+        setTimeout(() => setIsAutoCalibrationMode(true), 100);
+      }
+    } catch (err) {
+      console.error("Failed to reset failed calibrations:", err);
+    }
+  };
+
+  const handleResetImputedTracks = async () => {
+    try {
+      console.log("[Calibration] Resetting imputed and synced tracks back to 0.5/defaults to force clean recalibration...");
+      const { error } = await supabase
+        .from('tracks')
+        .update({
+          energy: 0.5,
+          danceability: 0.5,
+          valence: 0.5,
+          tempo: 0.5,
+          acousticness: 0.5,
+          instrumentalness: 0.1,
+          speechiness: 0.1,
+          liveness: 0.1,
+          loudness: 0.7
+        })
+        .neq('source', 'kaggle');
+      
+      if (error) throw error;
+      
+      setToast({
+        id: Date.now(),
+        message: "All non-Kaggle tracks successfully reset to defaults for recalibration!"
+      });
+      
+      if (isAutoCalibrationMode) {
+        setIsAutoCalibrationMode(false);
+        setTimeout(() => setIsAutoCalibrationMode(true), 100);
+      }
+    } catch (err) {
+      console.error("Failed to reset imputed tracks:", err);
+    }
+  };
+
   // Play/pause sync calibration handler
   useEffect(() => {
     // Only calibrate playing track on-demand when Auto-Calibration is OFF
@@ -154,11 +222,7 @@ export function App() {
         const { count, error: countError } = await supabase
           .from('tracks')
           .select('*', { count: 'exact', head: true })
-          .eq('energy', 0.5)
-          .eq('danceability', 0.5)
-          .eq('valence', 0.5)
-          .eq('tempo', 0.5)
-          .eq('acousticness', 0.5);
+          .or('energy.is.null,energy.eq.0.5');
 
         if (countError) throw countError;
         
@@ -168,11 +232,7 @@ export function App() {
         const { data, error } = await supabase
           .from('tracks')
           .select('*')
-          .eq('energy', 0.5)
-          .eq('danceability', 0.5)
-          .eq('valence', 0.5)
-          .eq('tempo', 0.5)
-          .eq('acousticness', 0.5)
+          .or('energy.is.null,energy.eq.0.5')
           .order('created_at', { ascending: false })
           .limit(50);
 
@@ -208,11 +268,7 @@ export function App() {
           const { data, error } = await supabase
             .from('tracks')
             .select('*')
-            .eq('energy', 0.5)
-            .eq('danceability', 0.5)
-            .eq('valence', 0.5)
-            .eq('tempo', 0.5)
-            .eq('acousticness', 0.5)
+            .or('energy.is.null,energy.eq.0.5')
             .order('created_at', { ascending: false })
             .limit(50);
           
@@ -935,6 +991,8 @@ export function App() {
                 onAddToQueue={handleAddToQueue}
                 isAutoCalibrationMode={isAutoCalibrationMode}
                 onToggleAutoCalibration={handleToggleAutoCalibration}
+                onResetFailedCalib={handleResetFailedCalibrations}
+                onResetImputed={handleResetImputedTracks}
                 onHoverTrack={handleTrackHover}
               />
             ) : (
